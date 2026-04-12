@@ -163,7 +163,7 @@ export function useTerminal(sessionName: string, hostId?: string) {
       // Don't let xterm process global app shortcuts (quick switcher, overview, etc.)
       if (e.type === 'keydown' && (e.metaKey || e.ctrlKey)) {
         const key = e.key.toLowerCase()
-        if (!e.shiftKey && (key === 'k' || key === 'p' || key === 'o' || key === 'h' ||
+        if (!e.shiftKey && (key === 'k' || key === 'p' || key === 'h' ||
             key === 'l' || key === ',' || key === '\\' || key === ' ')) {
           return false
         }
