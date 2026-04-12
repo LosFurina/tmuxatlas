@@ -179,8 +179,8 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
         return
       }
 
-      // Overview: Cmd/Ctrl + O (also Cmd+H on desktop)
-      if (mod && (e.key === 'o' || e.key === 'h') && !e.shiftKey) {
+      // Overview: Cmd/Ctrl + H
+      if (mod && e.key === 'h' && !e.shiftKey) {
         e.preventDefault()
         navigateTo(null)
         return

@@ -106,7 +106,7 @@ Press `Ctrl+/` (or `Cmd+/` on macOS) to see all shortcuts, or click the `?` in t
 |----------|--------|
 | `Ctrl+K` | Quick switcher — jump between sessions and windows |
 | `Ctrl+J` | Jump to next alert (cycles through waiting/error agents) |
-| `Ctrl+O` | Overview |
+| `Ctrl+H` | Overview |
 | `Ctrl+,` | Settings |
 | `Ctrl+\` | Toggle sidebar |
 | `Ctrl+L` | Lock / sign out |
