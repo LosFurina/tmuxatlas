@@ -60,7 +60,7 @@ jobs:
 
       - name: Load Quill secrets
         uses: 1password/load-secrets-action@v3
-        if: startsWith(github.ref, 'refs/tags/') && github.actor == github.repository_owner
+        if: startsWith(github.ref, 'refs/tags/') && (github.actor == github.repository_owner || github.actor == 'ekristen-dev[bot]')
         with:
           export-env: true
         env:
