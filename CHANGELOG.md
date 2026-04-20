@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3-beta.2](https://github.com/ekristen/guppi/compare/v0.1.2-beta.2...v0.1.3-beta.2) (2026-04-20)
+
+
+### Bug Fixes
+
+* build actor allowance ([2ab0a2d](https://github.com/ekristen/guppi/commit/2ab0a2de0bdb408456be2f8826781352e64b9750))
+
 ## [0.1.2-beta.2](https://github.com/ekristen/guppi/compare/v0.1.1-beta.2...v0.1.2-beta.2) (2026-04-12)
 
 
