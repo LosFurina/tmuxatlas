@@ -1,6 +1,6 @@
 # tmux Setup Guide
 
-This guide covers recommended tmux configuration, plugins, and system setup for getting the most out of guppi.
+This guide covers recommended tmux configuration, plugins, and system setup for getting the most out of TmuxAtlas.
 
 ## Recommended tmux Configuration
 
@@ -32,7 +32,7 @@ set -g renumber-windows on
 # Enable mouse support (scrolling, pane selection, resizing)
 set -g mouse on
 
-# --- Clipboard (required for guppi) ---
+# --- Clipboard (required for tmuxatlas) ---
 
 # Let tmux process OSC 52 clipboard sequences
 set -g set-clipboard on
@@ -141,13 +141,13 @@ set -g @continuum-save-interval '15' # save every 15 minutes
 run '~/.tmux/plugins/tpm/tpm'
 ```
 
-### A Note on tmux-resurrect + guppi
+### A Note on tmux-resurrect + TmuxAtlas
 
-`tmux-resurrect` and `tmux-continuum` are especially useful with guppi. Since guppi monitors tmux sessions, having them survive reboots means your guppi dashboard stays populated without manual session recreation. Combined with the systemd service below, your tmux sessions (and guppi) survive reboots automatically.
+`tmux-resurrect` and `tmux-continuum` are especially useful with TmuxAtlas. Since TmuxAtlas monitors tmux sessions, having them survive reboots means your TmuxAtlas dashboard stays populated without manual session recreation. Combined with the systemd service below, your tmux sessions (and TmuxAtlas) survive reboots automatically.
 
 ## systemd User Service
 
-A systemd user service ensures the tmux server starts automatically when you log in (or at boot with lingering enabled), so your sessions and guppi are always available.
+A systemd user service ensures the tmux server starts automatically when you log in (or at boot with lingering enabled), so your sessions and TmuxAtlas are always available.
 
 ### tmux Server Service
 
@@ -169,32 +169,33 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-### guppi Server Service
+### TmuxAtlas Server Service
 
-Create `~/.config/systemd/user/guppi.service`:
+Create `~/.config/systemd/user/tmuxatlas.service`:
 
 ```ini
 [Unit]
-Description=guppi web dashboard for tmux
+Description=TmuxAtlas web dashboard for tmux
 After=tmux-server.service
 Requires=tmux-server.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/guppi server
+ExecStart=%h/.local/bin/tmuxatlas server
 Restart=on-failure
 RestartSec=5
-Environment=GUPPI_PORT=7654
+Environment=TMUXATLAS_LISTEN=127.0.0.1:7654
 
 # Uncomment and customize as needed:
-# Environment=GUPPI_HUB=https://hub.example.ts.net:7654
-# Environment=GUPPI_LOCAL_ONLY=true
+# Environment=TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com
+# Environment=TMUXATLAS_HUB=https://tmuxatlas.example.com
+# Environment=TMUXATLAS_LOCAL_ONLY=true
 
 [Install]
 WantedBy=default.target
 ```
 
-Adjust the `ExecStart` path to wherever your `guppi` binary is installed.
+Adjust the `ExecStart` path to wherever your `tmuxatlas` binary is installed.
 
 ### Enable and Start
 
@@ -204,32 +205,32 @@ systemctl --user daemon-reload
 
 # Enable both services (start on login)
 systemctl --user enable tmux-server.service
-systemctl --user enable guppi.service
+systemctl --user enable tmuxatlas.service
 
 # Start them now
 systemctl --user start tmux-server.service
-systemctl --user start guppi.service
+systemctl --user start tmuxatlas.service
 
 # Check status
 systemctl --user status tmux-server.service
-systemctl --user status guppi.service
+systemctl --user status tmuxatlas.service
 ```
 
 ### Enable Lingering (Start at Boot Without Login)
 
-By default, systemd user services only run while the user has an active login session. To keep tmux and guppi running at boot (even before you log in), enable lingering:
+By default, systemd user services only run while the user has an active login session. To keep tmux and TmuxAtlas running at boot (even before you log in), enable lingering:
 
 ```bash
 sudo loginctl enable-linger $USER
 ```
 
-This is particularly important for headless servers or remote machines where you want guppi to be available immediately after a reboot.
+This is particularly important for headless servers or remote machines where you want TmuxAtlas to be available immediately after a reboot.
 
 ### Logs
 
 ```bash
-# View guppi logs
-journalctl --user -u guppi.service -f
+# View tmuxatlas logs
+journalctl --user -u tmuxatlas.service -f
 
 # View tmux server logs
 journalctl --user -u tmux-server.service -f

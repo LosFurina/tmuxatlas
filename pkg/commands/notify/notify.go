@@ -17,9 +17,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
-	"github.com/ekristen/guppi/pkg/common"
-	"github.com/ekristen/guppi/pkg/socket"
-	"github.com/ekristen/guppi/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/socket"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 // stdinEvent represents the JSON payload that agent hooks pass via stdin.
@@ -314,14 +314,14 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		httpClient := &http.Client{Timeout: 1 * time.Second}
 		resp, err = httpClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
-			return fmt.Errorf("failed to notify guppi: %w", err)
+			return fmt.Errorf("failed to notify TmuxAtlas: %w", err)
 		}
 		log.WithField("status_code", resp.StatusCode).Trace("HTTP response")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("guppi returned status %d", resp.StatusCode)
+		return fmt.Errorf("TmuxAtlas returned status %d", resp.StatusCode)
 	}
 
 	log.WithFields(logrus.Fields{
@@ -372,26 +372,26 @@ func init() {
 		},
 		&cli.StringFlag{
 			Name:    "server",
-			Usage:   "guppi server URL (HTTP fallback)",
-			Sources: cli.EnvVars("GUPPI_URL"),
+			Usage:   "TmuxAtlas server URL (HTTP fallback)",
+			Sources: cli.EnvVars("TMUXATLAS_URL", "GUPPI_URL"),
 			Value:   "http://localhost:7654",
 		},
 		&cli.StringFlag{
 			Name:    "socket",
-			Usage:   "path to guppi unix socket (auto-detected if omitted)",
-			Sources: cli.EnvVars("GUPPI_SOCKET"),
+			Usage:   "path to TmuxAtlas Unix socket (auto-detected if omitted)",
+			Sources: cli.EnvVars("TMUXATLAS_SOCKET", "GUPPI_SOCKET"),
 		},
 	}
 
 	cmd := &cli.Command{
 		Name:  "notify",
-		Usage: "send an agent hook event to guppi",
-		Description: `Notify guppi of AI tool activity. Used by agent hooks.
+		Usage: "send an agent hook event to TmuxAtlas",
+		Description: `Notify tmuxatlas of AI tool activity. Used by agent hooks.
 
 Examples:
-  guppi notify -t claude -s waiting -m "Needs approval"
-  guppi notify -t codex -s active
-  guppi notify -t claude -s completed
+  tmuxatlas notify -t claude -s waiting -m "Needs approval"
+  tmuxatlas notify -t codex -s active
+  tmuxatlas notify -t claude -s completed
 
 The tmux session, window, and pane are auto-detected when run inside tmux.`,
 		Flags:  flags,

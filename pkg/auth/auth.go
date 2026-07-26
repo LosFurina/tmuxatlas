@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 )
 
 // storedAuth is the on-disk format for auth credentials.
@@ -28,14 +30,10 @@ type PasswordStore struct {
 }
 
 func configDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "guppi"), nil
+	return paths.ConfigDir()
 }
 
-// NewPasswordStore creates a store backed by ~/.config/guppi/auth.json.
+// NewPasswordStore creates a store backed by ~/.config/tmuxatlas/auth.json.
 func NewPasswordStore() (*PasswordStore, error) {
 	dir, err := configDir()
 	if err != nil {
@@ -151,7 +149,7 @@ func (sm *SessionManager) Cleanup() {
 	}
 }
 
-const cookieName = "guppi_session"
+const cookieName = "tmuxatlas_session"
 
 // isUnixSocket returns true if the request arrived over a unix socket.
 func isUnixSocket(r *http.Request) bool {

@@ -8,8 +8,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 // PTYTerminalHandler handles WebSocket connections backed by a PTY running tmux attach
@@ -65,7 +65,7 @@ func (h *PTYTerminalHandler) HandleSession(w http.ResponseWriter, r *http.Reques
 	ptySess, err := tmux.NewPTYSession(h.tmuxPath, sessionName, uint16(cols), uint16(rows))
 	if err != nil {
 		log.WithError(err).Error("failed to start PTY session")
-		conn.WriteMessage(websocket.TextMessage, []byte("\r\n[guppi: failed to attach to session]\r\n"))
+		conn.WriteMessage(websocket.TextMessage, []byte("\r\n[TmuxAtlas: failed to attach to session]\r\n"))
 		return
 	}
 	defer ptySess.Close()

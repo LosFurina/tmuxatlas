@@ -1,4 +1,4 @@
-module github.com/ekristen/guppi
+module github.com/LosFurina/tmuxatlas
 
 go 1.25.1
 

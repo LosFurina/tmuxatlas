@@ -5,7 +5,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 // Manager holds the central state tree

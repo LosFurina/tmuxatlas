@@ -6,8 +6,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/ekristen/guppi/pkg/common"
-	"github.com/ekristen/guppi/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
 )
 
 func init() {
@@ -27,7 +27,7 @@ func init() {
 					peers := store.List()
 					if len(peers) == 0 {
 						fmt.Println("No paired peers.")
-						fmt.Println("Use 'guppi pair' to pair with another machine.")
+						fmt.Println("Use 'tmuxatlas pair' to pair with another machine.")
 						return nil
 					}
 
@@ -77,7 +77,7 @@ func init() {
 			peers := store.List()
 			if len(peers) == 0 {
 				fmt.Println("No paired peers.")
-				fmt.Println("Use 'guppi pair' to pair with another machine.")
+				fmt.Println("Use 'tmuxatlas pair' to pair with another machine.")
 				return nil
 			}
 

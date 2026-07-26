@@ -8,14 +8,14 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
-	"github.com/ekristen/guppi/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
 
-	_ "github.com/ekristen/guppi/pkg/commands/agent-setup"
-	_ "github.com/ekristen/guppi/pkg/commands/install"
-	_ "github.com/ekristen/guppi/pkg/commands/notify"
-	_ "github.com/ekristen/guppi/pkg/commands/pair"
-	_ "github.com/ekristen/guppi/pkg/commands/peers"
-	_ "github.com/ekristen/guppi/pkg/commands/server"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent-setup"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/install"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/notify"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/pair"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/peers"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/server"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func main() {
 			Usage:   "web dashboard for monitoring and interacting with tmux sessions",
 			Version: common.AppVersion.Summary,
 			Authors: []any{
-				"Erik Kristensen <erik@erikkristensen.com>",
+				"LosFurina",
 			},
 			Commands: common.GetCommands(),
 			CommandNotFound: func(ctx context.Context, command *cli.Command, s string) {

@@ -2,26 +2,24 @@ package peer
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/common"
-	"github.com/ekristen/guppi/pkg/identity"
-	"github.com/ekristen/guppi/pkg/state"
-	"github.com/ekristen/guppi/pkg/stats"
-	"github.com/ekristen/guppi/pkg/tmux"
-	"github.com/ekristen/guppi/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/state"
+	"github.com/LosFurina/tmuxatlas/pkg/stats"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 // hasScheme checks if an address string starts with a known URL scheme.
@@ -34,6 +32,36 @@ func hasScheme(addr string) bool {
 	return false
 }
 
+func hubWebSocketURL(hubURL, path string) (*url.URL, error) {
+	if !hasScheme(hubURL) {
+		if strings.Contains(hubURL, "://") {
+			return nil, fmt.Errorf("unsupported hub URL scheme")
+		}
+		hubURL = "wss://" + hubURL
+	}
+	u, err := url.Parse(hubURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse hub URL: %w", err)
+	}
+	switch u.Scheme {
+	case "https":
+		u.Scheme = "wss"
+	case "http":
+		u.Scheme = "ws"
+	case "wss", "ws":
+	default:
+		return nil, fmt.Errorf("unsupported hub URL scheme %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("hub URL host is required")
+	}
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("hub URL must not contain credentials, a path, query, or fragment")
+	}
+	u.Path = path
+	return u, nil
+}
+
 // Client connects to a hub and syncs local state
 type Client struct {
 	hubURL      string
@@ -44,11 +72,9 @@ type Client struct {
 	actTracker  *activity.Tracker
 	toolTracker *toolevents.Tracker
 	tmuxClient  *tmux.Client
-	insecure    bool
 
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	pendingCertPEM string // set when hub cert changed; cleared after auth succeeds
+	mu   sync.Mutex
+	conn *websocket.Conn
 
 	ptyManager *PTYManager
 }
@@ -56,7 +82,7 @@ type Client struct {
 // NewClient creates a new peer client
 func NewClient(hubURL string, id *identity.Identity, peerStore *identity.PeerStore,
 	localMgr *state.Manager, peerMgr *Manager, actTracker *activity.Tracker,
-	toolTracker *toolevents.Tracker, tmuxPath string, insecure bool) *Client {
+	toolTracker *toolevents.Tracker, tmuxPath string) *Client {
 
 	tmuxClient, _ := tmux.NewClient()
 	c := &Client{
@@ -68,100 +94,9 @@ func NewClient(hubURL string, id *identity.Identity, peerStore *identity.PeerSto
 		actTracker:  actTracker,
 		toolTracker: toolTracker,
 		tmuxClient:  tmuxClient,
-		insecure:    insecure,
 	}
 	c.ptyManager = NewPTYManager(tmuxPath, actTracker, c)
 	return c
-}
-
-// getCACert returns the CA certificate PEM for the hub peer, if any.
-func (c *Client) getCACert() string {
-	peers := c.peerStore.List()
-	for _, p := range peers {
-		if p.CACertPEM != "" {
-			return p.CACertPEM
-		}
-	}
-	return ""
-}
-
-// getPinnedCert returns the pinned TLS certificate PEM for the hub peer, if any.
-func (c *Client) getPinnedCert() string {
-	peers := c.peerStore.List()
-	for _, p := range peers {
-		if p.TLSCertPEM != "" {
-			return p.TLSCertPEM
-		}
-	}
-	return ""
-}
-
-// tlsConfig returns the TLS configuration for connecting to the hub.
-// Trust priority:
-// 1. System CAs (LE, Tailscale)
-// 2. CACertPEM — standard RootCA verification (no pin rotation needed)
-// 3. TLSCertPEM — legacy pinned cert + pin-rotation
-// 4. Reject
-func (c *Client) tlsConfig() *tls.Config {
-	if c.insecure {
-		return &tls.Config{InsecureSkipVerify: true}
-	}
-
-	// If we have a CA cert, use standard x509 verification — no pin rotation needed
-	caCertPEM := c.getCACert()
-	if caCertPEM != "" {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM([]byte(caCertPEM)) {
-			return &tls.Config{RootCAs: pool}
-		}
-	}
-
-	// Legacy path: pinned cert with pin-rotation support
-	pinnedPEM := c.getPinnedCert()
-
-	return &tls.Config{
-		InsecureSkipVerify: true, // we do our own verification in VerifyConnection
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("hub presented no certificates")
-			}
-
-			leaf := cs.PeerCertificates[0]
-			leafPEM := encodeCertPEM(leaf)
-
-			// 1. Check system CAs
-			if isSystemTrusted(cs) {
-				c.mu.Lock()
-				c.pendingCertPEM = ""
-				c.mu.Unlock()
-				return nil
-			}
-
-			// 2. Pinned cert matches — all good
-			if pinnedPEM != "" && leafPEM == pinnedPEM {
-				c.mu.Lock()
-				c.pendingCertPEM = ""
-				c.mu.Unlock()
-				return nil
-			}
-
-			// 3. Cert changed — allow handshake, flag for post-auth pin update
-			if pinnedPEM != "" {
-				c.mu.Lock()
-				c.pendingCertPEM = leafPEM
-				c.mu.Unlock()
-				return nil
-			}
-
-			// 4. No pin and not system-trusted — reject
-			return fmt.Errorf("hub certificate not trusted (not pinned, not system CA)")
-		},
-	}
-}
-
-// TLSConfig returns the TLS configuration (exported for PTYManager)
-func (c *Client) TLSConfig() *tls.Config {
-	return c.tlsConfig()
 }
 
 // Run connects to the hub and maintains the connection with reconnection
@@ -206,29 +141,12 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	log := logrus.WithField("hub", c.hubURL)
 
 	// Build WebSocket URL — normalize bare host:port to a full URL
-	hubAddr := c.hubURL
-	if !hasScheme(hubAddr) {
-		hubAddr = "wss://" + hubAddr
-	}
-	u, err := url.Parse(hubAddr)
+	u, err := hubWebSocketURL(c.hubURL, "/ws/peer")
 	if err != nil {
-		return fmt.Errorf("parse hub URL: %w", err)
-	}
-	if u.Scheme == "https" {
-		u.Scheme = "wss"
-	} else if u.Scheme == "http" {
-		u.Scheme = "ws"
-	}
-	u.Path = "/ws/peer"
-
-	dialer := websocket.DefaultDialer
-	if tlsCfg := c.tlsConfig(); tlsCfg != nil {
-		dialer = &websocket.Dialer{
-			TLSClientConfig: tlsCfg,
-		}
+		return err
 	}
 
-	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("connect to hub: %w", err)
 	}
@@ -295,25 +213,6 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	}
 
 	log.Info("authenticated with hub")
-
-	// Ed25519 auth succeeded — if cert changed, update the pin
-	c.mu.Lock()
-	pendingCert := c.pendingCertPEM
-	c.pendingCertPEM = ""
-	c.mu.Unlock()
-	if pendingCert != "" {
-		peers := c.peerStore.List()
-		for _, p := range peers {
-			if p.TLSCertPEM != "" {
-				if err := c.peerStore.UpdateTLSCert(p.PublicKey, pendingCert); err != nil {
-					log.WithError(err).Warn("failed to update hub TLS certificate pin")
-				} else {
-					log.Info("updated hub TLS certificate pin after successful auth")
-				}
-				break
-			}
-		}
-	}
 
 	// Configure ping/pong for connection liveness detection
 	conn.SetPongHandler(func(string) error {
@@ -618,38 +517,4 @@ func (c *Client) writeJSON(conn *websocket.Conn, msg *Message) {
 // HubURL returns the hub URL for PTY connections
 func (c *Client) HubURL() string {
 	return c.hubURL
-}
-
-// Insecure returns whether TLS verification is skipped
-func (c *Client) Insecure() bool {
-	return c.insecure
-}
-
-// encodeCertPEM encodes an x509.Certificate to PEM format.
-func encodeCertPEM(cert *x509.Certificate) string {
-	block := &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: cert.Raw,
-	}
-	return string(pem.EncodeToMemory(block))
-}
-
-// isSystemTrusted verifies the peer certificate chain against system root CAs.
-func isSystemTrusted(cs tls.ConnectionState) bool {
-	if len(cs.PeerCertificates) == 0 {
-		return false
-	}
-	pool, err := x509.SystemCertPool()
-	if err != nil {
-		return false
-	}
-	opts := x509.VerifyOptions{
-		Roots:         pool,
-		Intermediates: x509.NewCertPool(),
-	}
-	for _, cert := range cs.PeerCertificates[1:] {
-		opts.Intermediates.AddCert(cert)
-	}
-	_, err = cs.PeerCertificates[0].Verify(opts)
-	return err == nil
 }

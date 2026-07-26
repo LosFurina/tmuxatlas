@@ -32,7 +32,7 @@ func TestDetectPrompt(t *testing.T) {
 		},
 		{
 			name:    "shell prompt ❯",
-			content: "❯\n\nekristen in 🌐 donnager in guppi on \ue0a0 copilot [$!?] via 🐹 v1.25.1\n❯ ",
+			content: "❯\n\nekristen in 🌐 donnager in tmuxatlas on \ue0a0 copilot [$!?] via 🐹 v1.25.1\n❯ ",
 			wantHit: false,
 		},
 		{
@@ -57,17 +57,17 @@ func TestDetectPrompt(t *testing.T) {
 		},
 		{
 			name:    "shell prompt with path",
-			content: "~/projects/guppi$ ",
+			content: "~/projects/tmuxatlas$ ",
 			wantHit: false,
 		},
 		{
 			name:    "codex exited to shell",
-			content: "❯ codex\n\nekristen in 🌐 donnager in guppi on \ue0a0 copilot [$!?] via 🐹 v1.25.1 via 💎 v3.1.3\n❯ ",
+			content: "❯ codex\n\nekristen in 🌐 donnager in tmuxatlas on \ue0a0 copilot [$!?] via 🐹 v1.25.1 via 💎 v3.1.3\n❯ ",
 			wantHit: false,
 		},
 		{
 			name:    "username containing reject keyword",
-			content: "ekristen in 🌐 donnager in guppi\n❯ ",
+			content: "ekristen in 🌐 donnager in tmuxatlas\n❯ ",
 			wantHit: false,
 		},
 		{
@@ -138,7 +138,7 @@ func TestDetectPrompt(t *testing.T) {
 		},
 		{
 			name:    "angle bracket prompt",
-			content: "guppi> ",
+			content: "tmuxatlas> ",
 			wantHit: true,
 			wantMsg: "Input prompt detected",
 		},

@@ -68,8 +68,8 @@ export function TopBar({
       {/* Left: Logo + alerts */}
       <div className="flex items-center gap-4 flex-1 overflow-hidden">
         <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={onOverview}>
-          <img src="/icon-192.png" alt="guppi" width="22" height="22" className="rounded-sm" />
-          <span className="font-mono text-sm font-bold text-[#7dd3fc]">GUPPI</span>
+          <img src="/icon-192.png" alt="TmuxAtlas" width="22" height="22" className="rounded-sm" />
+          <span className="font-mono text-sm font-bold text-[#7dd3fc]">TmuxAtlas</span>
         </div>
 
         {/* New session + collapse sidebar */}

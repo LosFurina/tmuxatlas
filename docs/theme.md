@@ -1,4 +1,4 @@
-# Guppi Theme Palette Reference
+# TmuxAtlas Theme Palette Reference
 
 To create a new theme, provide values for **two sections**: 31 CSS variables and 21 terminal colors. Add the theme as a new entry in the `themePresets` object in `web/src/theme.ts`.
 

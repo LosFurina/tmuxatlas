@@ -1,6 +1,6 @@
 # Agent Detection & Event Tracking
 
-Guppi uses a multi-layered approach to detect AI coding agents running in tmux panes and track their state. This document describes how each agent is detected, what events they produce, and how "waiting for input" state is determined.
+TmuxAtlas uses a multi-layered approach to detect AI coding agents running in tmux panes and track their state. This document describes how each agent is detected, what events they produce, and how "waiting for input" state is determined.
 
 ## Detection Layers
 
@@ -8,7 +8,7 @@ There are five layers, from most precise to most general:
 
 | Layer | Mechanism | Latency | Accuracy |
 |-------|-----------|---------|----------|
-| **Hook-based** | Agent calls `guppi notify` via configured hooks | Instant | Exact |
+| **Hook-based** | Agent calls `tmuxatlas notify` via configured hooks | Instant | Exact |
 | **Process tree** | Scan `/proc` for known agent binaries | ~5s | High |
 | **Silence + capture-pane** | Detect quiet panes, inspect content for prompts | ~10-20s | Medium |
 | **Inactivity promoter** | Promote to "waiting" after 30s of no hook activity | ~30s | Low |
@@ -38,11 +38,11 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 **Detection:** Hybrid — hook for completion, process tree + silence monitor for waiting.
 
 **Hook configured** (`~/.codex/config.toml`):
-- `notify = ["guppi", "notify", "-t", "codex", "--event-data"]`
+- `notify = ["tmuxatlas", "notify", "-t", "codex", "--event-data"]`
 - Fires on `agent-turn-complete` → `completed` status
 - Message extracted from `last-assistant-message` field (truncated to 200 chars)
 
-**Waiting detection:** Silence monitor. When codex goes quiet for 10s, guppi captures the pane content and looks for approval prompts (e.g., `allow / deny`, `(y/n)`). Limited to 2 checks per silence period to avoid unnecessary tmux commands.
+**Waiting detection:** Silence monitor. When codex goes quiet for 10s, TmuxAtlas captures the pane content and looks for approval prompts (e.g., `allow / deny`, `(y/n)`). Limited to 2 checks per silence period to avoid unnecessary tmux commands.
 
 **Process tree match:** Binary named `codex`, or node script with "codex" in the path (e.g., `node /usr/lib/node_modules/@openai/codex/bin/codex.js`).
 
@@ -50,7 +50,7 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 
 **Detection:** Hook-based for activity, silence monitor for waiting.
 
-**Hooks configured** (`~/.copilot/hooks/guppi.json`):
+**Hooks configured** (`~/.copilot/hooks/tmuxatlas.json`):
 - `sessionStart` → `active` ("Session started")
 - `sessionEnd` → `completed` ("Session ended")
 - `preToolUse` → `active` ("Using tool")
@@ -70,7 +70,7 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 
 **Detection:** Hook-based (native waiting) via plugin system.
 
-**Plugin configured** (`~/.config/opencode/plugins/guppi.js`):
+**Plugin configured** (`~/.config/opencode/plugins/tmuxatlas.js`):
 - `permission.asked` → `waiting` ("Permission needed")
 - `permission.replied` → `active` ("Working")
 - `tool.execute.before` → `active` ("Using tool")
@@ -86,11 +86,11 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 
 ### Hook-Based Detection
 
-Agents call `guppi notify` which sends an event to the server via unix socket (preferred) or HTTP fallback. The notify command auto-detects the tmux session, window, and pane from the `TMUX_PANE` environment variable.
+Agents call `tmuxatlas notify` which sends an event to the server via unix socket (preferred) or HTTP fallback. The notify command auto-detects the tmux session, window, and pane from the `TMUX_PANE` environment variable.
 
 Event delivery path:
 ```
-Agent hook → guppi notify → unix socket → POST /api/tool-event → Tracker.Record() → WebSocket broadcast
+Agent hook → tmuxatlas notify → unix socket → POST /api/tool-event → Tracker.Record() → WebSocket broadcast
 ```
 
 The server stamps the local host identity on incoming events for multi-host navigation.

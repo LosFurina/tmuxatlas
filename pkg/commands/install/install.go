@@ -11,11 +11,11 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/ekristen/guppi/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
 )
 
 const systemdUnit = `[Unit]
-Description=Guppi - Web dashboard for tmux sessions
+Description=TmuxAtlas - Web dashboard for tmux sessions
 After=default.target
 
 [Service]
@@ -34,7 +34,7 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.guppi.server</string>
+	<string>com.tmuxatlas.server</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>{{.BinaryPath}}</string>
@@ -45,9 +45,9 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>{{.LogDir}}/guppi.stdout.log</string>
+	<string>{{.LogDir}}/tmuxatlas.stdout.log</string>
 	<key>StandardErrorPath</key>
-	<string>{{.LogDir}}/guppi.stderr.log</string>
+	<string>{{.LogDir}}/tmuxatlas.stderr.log</string>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
@@ -88,7 +88,7 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	}
 
 	unitDir := filepath.Join(configDir, "systemd", "user")
-	unitPath := filepath.Join(unitDir, "guppi.service")
+	unitPath := filepath.Join(unitDir, "tmuxatlas.service")
 
 	if err := os.MkdirAll(unitDir, 0755); err != nil {
 		return fmt.Errorf("could not create systemd user directory: %w", err)
@@ -117,21 +117,28 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 
 	fmt.Printf("Wrote %s\n", unitPath)
 
+	// Stop the pre-rename service so it cannot contend for the same port.
+	legacyUnitPath := filepath.Join(unitDir, "guppi.service")
+	if _, err := os.Stat(legacyUnitPath); err == nil {
+		_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", "guppi.service").Run()
+		fmt.Printf("Disabled legacy service %s (file retained for rollback)\n", legacyUnitPath)
+	}
+
 	// Reload and enable
 	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload failed: %w", err)
 	}
 
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", "guppi.service").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", "tmuxatlas.service").Run(); err != nil {
 		return fmt.Errorf("systemctl enable failed: %w", err)
 	}
 
 	fmt.Println("Service enabled and started (systemctl --user)")
 	fmt.Println()
-	fmt.Println("  Status:   systemctl --user status guppi")
-	fmt.Println("  Logs:     journalctl --user -u guppi -f")
-	fmt.Println("  Restart:  systemctl --user restart guppi")
-	fmt.Println("  Web UI:   https://localhost:7654")
+	fmt.Println("  Status:   systemctl --user status tmuxatlas")
+	fmt.Println("  Logs:     journalctl --user -u tmuxatlas -f")
+	fmt.Println("  Restart:  systemctl --user restart tmuxatlas")
+	fmt.Println("  Web UI:   http://localhost:7654")
 	return nil
 }
 
@@ -147,7 +154,7 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 	}
 
 	agentDir := filepath.Join(home, "Library", "LaunchAgents")
-	plistPath := filepath.Join(agentDir, "com.guppi.server.plist")
+	plistPath := filepath.Join(agentDir, "com.tmuxatlas.server.plist")
 	logDir := filepath.Join(home, "Library", "Logs")
 
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -177,6 +184,13 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 
 	fmt.Printf("Wrote %s\n", plistPath)
 
+	// Stop the pre-rename service while retaining its plist for rollback.
+	legacyPlistPath := filepath.Join(agentDir, "com.guppi.server.plist")
+	if _, err := os.Stat(legacyPlistPath); err == nil {
+		_ = exec.CommandContext(ctx, "launchctl", "unload", "-w", legacyPlistPath).Run()
+		fmt.Printf("Unloaded legacy service %s (file retained for rollback)\n", legacyPlistPath)
+	}
+
 	// Load the agent
 	if err := exec.CommandContext(ctx, "launchctl", "load", "-w", plistPath).Run(); err != nil {
 		return fmt.Errorf("launchctl load failed: %w", err)
@@ -184,10 +198,10 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 
 	fmt.Println("Service loaded and started (launchctl)")
 	fmt.Println()
-	fmt.Println("  Status:   launchctl list com.guppi.server")
-	fmt.Printf("  Logs:     tail -f %s/guppi.stderr.log\n", cfg.LogDir)
-	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/com.guppi.server\n")
-	fmt.Println("  Web UI:   https://localhost:7654")
+	fmt.Println("  Status:   launchctl list com.tmuxatlas.server")
+	fmt.Printf("  Logs:     tail -f %s/tmuxatlas.stderr.log\n", cfg.LogDir)
+	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/com.tmuxatlas.server\n")
+	fmt.Println("  Web UI:   http://localhost:7654")
 	return nil
 }
 
@@ -208,10 +222,10 @@ func uninstallLinux(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("could not determine config directory: %w", err)
 	}
 
-	unitPath := filepath.Join(configDir, "systemd", "user", "guppi.service")
+	unitPath := filepath.Join(configDir, "systemd", "user", "tmuxatlas.service")
 
 	// Disable and stop
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", "guppi.service").Run()
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", "tmuxatlas.service").Run()
 
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("could not remove unit file: %w", err)
@@ -230,7 +244,7 @@ func uninstallDarwin(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("could not determine home directory: %w", err)
 	}
 
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.guppi.server.plist")
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.tmuxatlas.server.plist")
 
 	// Unload the agent
 	_ = exec.CommandContext(ctx, "launchctl", "unload", "-w", plistPath).Run()
@@ -258,20 +272,20 @@ func uninstallExecute(ctx context.Context, c *cli.Command) error {
 func init() {
 	cmd := &cli.Command{
 		Name:  "install",
-		Usage: "install guppi as a user service for auto-start",
-		Description: `Install guppi to start automatically on login.
+		Usage: "install TmuxAtlas as a user service for auto-start",
+		Description: `Install TmuxAtlas to start automatically on login.
 
-On Linux, installs a systemd user unit (~/.config/systemd/user/guppi.service).
-On macOS, installs a launchd plist (~/Library/LaunchAgents/com.guppi.server.plist).
+On Linux, installs a systemd user unit (~/.config/systemd/user/tmuxatlas.service).
+On macOS, installs a launchd plist (~/Library/LaunchAgents/com.tmuxatlas.server.plist).
 
-Use "guppi install" to install and enable, "guppi uninstall" to remove.`,
+Use "tmuxatlas install" to install and enable, "tmuxatlas uninstall" to remove.`,
 		Action: installExecute,
 	}
 
 	uninstallCmd := &cli.Command{
 		Name:  "uninstall",
-		Usage: "remove guppi user service",
-		Description: `Remove the guppi auto-start service.
+		Usage: "remove TmuxAtlas user service",
+		Description: `Remove the TmuxAtlas auto-start service.
 
 On Linux, disables and removes the systemd user unit.
 On macOS, unloads and removes the launchd plist.`,

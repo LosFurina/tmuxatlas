@@ -3,10 +3,10 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - main
   pull_request:
     branches:
-      - master
+      - main
 
 jobs:
   test:
@@ -34,6 +34,9 @@ jobs:
       - name: Build frontend
         run: npm run build
         working-directory: web
+
+      - name: Validate installer
+        run: sh -n install.sh && test -x install.sh
 
       - name: Go tests
         run: go test ./...

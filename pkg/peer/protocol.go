@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/tmux"
-	"github.com/ekristen/guppi/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 // Message types sent from peer to hub over control WebSocket
@@ -102,15 +102,15 @@ type PeerStatePayload struct {
 
 // HostInfo represents a peer's state as seen by the hub
 type HostInfo struct {
-	ID        string             `json:"id"`         // public key fingerprint
-	Name      string             `json:"name"`
-	Version   string             `json:"version,omitempty"`
-	Local     bool               `json:"local,omitempty"`
-	Online    bool               `json:"online"`
-	Sessions  []*tmux.Session    `json:"sessions"`
-	Activity  []*activity.Snapshot `json:"activity,omitempty"`
-	Stats     map[string]interface{} `json:"stats,omitempty"`
-	LastSeen  time.Time          `json:"last_seen"`
+	ID       string                 `json:"id"` // public key fingerprint
+	Name     string                 `json:"name"`
+	Version  string                 `json:"version,omitempty"`
+	Local    bool                   `json:"local,omitempty"`
+	Online   bool                   `json:"online"`
+	Sessions []*tmux.Session        `json:"sessions"`
+	Activity []*activity.Snapshot   `json:"activity,omitempty"`
+	Stats    map[string]interface{} `json:"stats,omitempty"`
+	LastSeen time.Time              `json:"last_seen"`
 }
 
 // PeerNotifyPayload is sent when a peer connects or disconnects

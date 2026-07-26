@@ -6,13 +6,13 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/common"
-	"github.com/ekristen/guppi/pkg/identity"
-	"github.com/ekristen/guppi/pkg/state"
-	"github.com/ekristen/guppi/pkg/stats"
-	"github.com/ekristen/guppi/pkg/tmux"
-	"github.com/ekristen/guppi/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/state"
+	"github.com/LosFurina/tmuxatlas/pkg/stats"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 const (

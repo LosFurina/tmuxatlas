@@ -2,14 +2,12 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
-	"strings"
 	"net"
 	"net/http"
 	"strconv"
@@ -22,26 +20,26 @@ import (
 
 	wp "github.com/SherClockHolmes/webpush-go"
 
-	"github.com/ekristen/guppi/pkg/agentcheck"
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/auth"
-	"github.com/ekristen/guppi/pkg/common"
-	"github.com/ekristen/guppi/pkg/identity"
-	"github.com/ekristen/guppi/pkg/peer"
-	"github.com/ekristen/guppi/pkg/preferences"
-	"github.com/ekristen/guppi/pkg/socket"
-	"github.com/ekristen/guppi/pkg/state"
-	"github.com/ekristen/guppi/pkg/stats"
-	"github.com/ekristen/guppi/pkg/tlscert"
-	"github.com/ekristen/guppi/pkg/tmux"
-	"github.com/ekristen/guppi/pkg/toolevents"
-	"github.com/ekristen/guppi/pkg/webpush"
-	"github.com/ekristen/guppi/pkg/ws"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
+	"github.com/LosFurina/tmuxatlas/pkg/auth"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/peer"
+	"github.com/LosFurina/tmuxatlas/pkg/preferences"
+	"github.com/LosFurina/tmuxatlas/pkg/socket"
+	"github.com/LosFurina/tmuxatlas/pkg/state"
+	"github.com/LosFurina/tmuxatlas/pkg/stats"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/webpush"
+	"github.com/LosFurina/tmuxatlas/pkg/ws"
 )
 
-
 type Options struct {
-	Port            int
+	ListenAddress   string
+	PublicURL       string
+	SecureCookies   bool
 	SocketPath      string
 	Client          *tmux.Client
 	StateMgr        *state.Manager
@@ -53,10 +51,6 @@ type Options struct {
 	AuthEnabled     bool
 	PasswordStore   *auth.PasswordStore
 	SessionMgr      *auth.SessionManager
-	TLSConfig       *tls.Config
-	TLSFingerprint  string // hex SHA256 of leaf TLS cert (set automatically)
-	CertReloader    *tlscert.CertReloader
-	CACertPEM       string // CA certificate PEM for pairing (empty when using external certs)
 	PeerMgr         *peer.Manager
 	PeerHandler     *peer.Handler
 	PairingMgr      *identity.PairingManager
@@ -139,9 +133,6 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 func Run(ctx context.Context, opts *Options) error {
 	logger := logrus.WithField("component", "server")
 
-	tlsEnabled := opts.TLSConfig != nil
-	secureCookies := tlsEnabled
-
 	r := chi.NewRouter()
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.StripSlashes)
@@ -152,42 +143,11 @@ func Run(ctx context.Context, opts *Options) error {
 		// Public auth endpoints (no middleware)
 		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasswordStore))
 		if opts.AuthEnabled {
-			r.Post("/auth/setup", auth.SetupHandler(opts.PasswordStore, opts.SessionMgr, secureCookies))
-			r.Post("/auth/login", auth.LoginHandler(opts.PasswordStore, opts.SessionMgr, secureCookies))
+			r.Post("/auth/setup", auth.SetupHandler(opts.PasswordStore, opts.SessionMgr, opts.SecureCookies))
+			r.Post("/auth/login", auth.LoginHandler(opts.PasswordStore, opts.SessionMgr, opts.SecureCookies))
 			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr))
 			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr))
 		}
-
-		// TLS status — tells frontend whether CA cert is available for trust
-		r.Get("/tls/status", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]bool{
-				"ca_available": opts.CACertPEM != "",
-			})
-		})
-
-		// TLS CA certificate download — public, no auth required
-		r.Get("/tls/ca.crt", func(w http.ResponseWriter, r *http.Request) {
-			if opts.CACertPEM == "" {
-				http.Error(w, "no CA certificate available", http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/x-x509-ca-cert")
-			w.Header().Set("Content-Disposition", `attachment; filename="guppi-ca.crt"`)
-			w.Write([]byte(opts.CACertPEM))
-		})
-
-		// Apple mobileconfig profile for CA trust — public, no auth required
-		r.Get("/tls/ca.mobileconfig", func(w http.ResponseWriter, r *http.Request) {
-			if opts.CACertPEM == "" {
-				http.Error(w, "no CA certificate available", http.StatusNotFound)
-				return
-			}
-			profile := buildMobileConfig(opts.CACertPEM)
-			w.Header().Set("Content-Type", "application/x-apple-aspen-config")
-			w.Header().Set("Content-Disposition", `attachment; filename="guppi-ca.mobileconfig"`)
-			w.Write(profile)
-		})
 
 		// Version endpoint — public, no auth required
 		r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
@@ -644,18 +604,9 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				// Append TLS fingerprint to code so peers can verify the cert
-				displayCode := code.Code
-				fp := opts.TLSFingerprint
-				if opts.CertReloader != nil {
-					fp = opts.CertReloader.Fingerprint()
-				}
-				if fp != "" {
-					displayCode = code.Code + ":" + fp[:16]
-				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(map[string]interface{}{
-					"code":       displayCode,
+					"code":       code.Code,
 					"expires_at": code.ExpiresAt,
 				})
 			})
@@ -739,33 +690,29 @@ func Run(ctx context.Context, opts *Options) error {
 
 	serverErr := make(chan error, 2)
 
-	// Start TCP listener for browser connections
-	tcpAddr := fmt.Sprintf(":%d", opts.Port)
-	tcpListener, err := net.Listen("tcp", tcpAddr)
+	listenAddress := opts.ListenAddress
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1:7654"
+	}
+	tcpListener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		return fmt.Errorf("tcp listen: %w", err)
 	}
 
 	go func() {
-		var serveErr error
-		if tlsEnabled {
-			tlsListener := tls.NewListener(tcpListener, opts.TLSConfig)
-			serveErr = srv.Serve(tlsListener)
-		} else {
-			serveErr = srv.Serve(tcpListener)
-		}
+		serveErr := srv.Serve(tcpListener)
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			logger.WithError(serveErr).Error("tcp listen error")
 			serverErr <- serveErr
 		}
 	}()
 
-	scheme := "http"
-	if tlsEnabled {
-		scheme = "https"
+	publicURL := opts.PublicURL
+	if publicURL == "" {
+		publicURL = "http://localhost:7654"
 	}
-	logger.WithField("port", opts.Port).Info("starting guppi server")
-	logger.Infof("open %s://localhost:%d in your browser", scheme, opts.Port)
+	logger.WithField("listen", listenAddress).Info("starting TmuxAtlas HTTP origin")
+	logger.Infof("open %s in your browser", publicURL)
 	if opts.AuthEnabled {
 		logger.Info("authentication is enabled")
 	}
@@ -817,67 +764,4 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 
 	return nil
-}
-
-// buildMobileConfig creates an Apple configuration profile that installs the
-// guppi CA certificate as a trusted root. Users can tap the resulting
-// .mobileconfig file on iOS/macOS to install it.
-func buildMobileConfig(caCertPEM string) []byte {
-	// Strip PEM headers to get raw base64 payload
-	payload := caCertPEM
-
-	const profileTemplate = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>PayloadContent</key>
-	<array>
-		<dict>
-			<key>PayloadCertificateFileName</key>
-			<string>guppi-ca.crt</string>
-			<key>PayloadContent</key>
-			<data>%s</data>
-			<key>PayloadDescription</key>
-			<string>Adds the guppi CA certificate as a trusted root</string>
-			<key>PayloadDisplayName</key>
-			<string>guppi CA</string>
-			<key>PayloadIdentifier</key>
-			<string>com.guppi.ca-cert</string>
-			<key>PayloadType</key>
-			<string>com.apple.security.root</string>
-			<key>PayloadUUID</key>
-			<string>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</string>
-			<key>PayloadVersion</key>
-			<integer>1</integer>
-		</dict>
-	</array>
-	<key>PayloadDisplayName</key>
-	<string>guppi CA Trust</string>
-	<key>PayloadIdentifier</key>
-	<string>com.guppi.ca-trust-profile</string>
-	<key>PayloadRemovalDisallowed</key>
-	<false/>
-	<key>PayloadType</key>
-	<string>Configuration</string>
-	<key>PayloadUUID</key>
-	<string>F1E2D3C4-B5A6-7890-FEDC-BA0987654321</string>
-	<key>PayloadVersion</key>
-	<integer>1</integer>
-	<key>PayloadDescription</key>
-	<string>Installs the guppi CA certificate so your device trusts the guppi server</string>
-</dict>
-</plist>`
-
-	// The mobileconfig PayloadContent <data> field expects base64-encoded DER.
-	// Our PEM is already base64-encoded DER with headers — strip the headers.
-	clean := ""
-	for _, line := range strings.Split(payload, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "-----") {
-			continue
-		}
-		clean += trimmed
-	}
-
-	return []byte(fmt.Sprintf(profileTemplate, clean))
 }

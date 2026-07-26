@@ -1,17 +1,32 @@
 name: GoReleaser
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        type: string
+      snapshot:
+        description: Build without publishing
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-    tags:
-      - "v*"
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: main
+        type: string
+      snapshot:
+        description: Build without publishing
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
-  packages: write
   id-token: write
 
 jobs:
@@ -22,6 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -41,40 +57,32 @@ jobs:
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
-      - name: Install Quill
-        env:
-          QUILL_VERSION: 0.4.1
-        run: |
-          curl -Lo /tmp/quill_${QUILL_VERSION}_linux_amd64.tar.gz https://github.com/anchore/quill/releases/download/v${QUILL_VERSION}/quill_${QUILL_VERSION}_linux_amd64.tar.gz
-          tar -xvf /tmp/quill_${QUILL_VERSION}_linux_amd64.tar.gz -C /tmp
-          mv /tmp/quill /usr/local/bin/quill
-          chmod +x /usr/local/bin/quill
-
-      - name: Set GoReleaser args (release)
-        if: startsWith(github.ref, 'refs/tags/')
-        run: echo "GORELEASER_ARGS=" >> $GITHUB_ENV
-
-      - name: Set GoReleaser args (snapshot)
-        if: startsWith(github.ref, 'refs/tags/') == false
-        run: echo "GORELEASER_ARGS=--snapshot" >> $GITHUB_ENV
-
-      - name: Load Quill secrets
-        uses: 1password/load-secrets-action@v3
-        if: startsWith(github.ref, 'refs/tags/') && (github.actor == github.repository_owner || github.actor == 'ekristen-dev[bot]')
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          QUILL_NOTARY_KEY: ${{ secrets.OP_QUILL_NOTARY_KEY }}
-          QUILL_NOTARY_KEY_ID: ${{ secrets.OP_QUILL_NOTARY_KEY_ID }}
-          QUILL_NOTARY_ISSUER: ${{ secrets.OP_QUILL_NOTARY_ISSUER }}
-          QUILL_SIGN_PASSWORD: ${{ secrets.OP_QUILL_SIGN_PASSWORD }}
-          QUILL_SIGN_P12: ${{ secrets.OP_QUILL_SIGN_P12 }}
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
+          distribution: goreleaser
           version: "~> v2"
-          args: release --clean ${{ env.GORELEASER_ARGS }}
+          args: release --clean ${{ inputs.snapshot && '--snapshot --skip=sign' || '--skip=publish' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets to the existing GitHub release
+        if: inputs.snapshot == false
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.ref }}
+        run: |
+          shopt -s nullglob
+          artifacts=(
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sbom.json
+            dist/checksums.txt
+            dist/checksums.txt.sigstore.json
+          )
+          if (( ${#artifacts[@]} == 0 )); then
+            echo "No release artifacts were produced" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${artifacts[@]}" --clobber

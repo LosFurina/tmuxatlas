@@ -2,7 +2,7 @@
 
 # Build the frontend and embed it in the Go binary
 build: frontend
-	go build -o dist/guppi .
+	go build -o dist/tmuxatlas .
 
 # Build just the frontend
 frontend:

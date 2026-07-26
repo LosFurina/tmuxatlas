@@ -1,8 +1,6 @@
 package identity
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,38 +11,15 @@ import (
 
 // Peer represents a known paired peer
 type Peer struct {
-	Name       string    `json:"name"`
-	PublicKey  string    `json:"public_key"`
-	PairedAt   time.Time `json:"paired_at"`
-	TLSCertPEM string   `json:"tls_cert_pem,omitempty"` // pinned TLS certificate from pairing
-	CACertPEM  string   `json:"ca_cert_pem,omitempty"`  // node's CA certificate
+	Name      string    `json:"name"`
+	PublicKey string    `json:"public_key"`
+	PairedAt  time.Time `json:"paired_at"`
 }
 
 // Fingerprint returns a short identifier derived from the peer's public key
 func (p *Peer) Fingerprint() string {
 	id := &Identity{PublicKey: p.PublicKey}
 	return id.Fingerprint()
-}
-
-// TLSConfig returns a tls.Config that trusts the peer's certificate.
-// Trust priority: CACertPEM (standard CA verification) > TLSCertPEM (pinned cert) > system defaults.
-func (p *Peer) TLSConfig(insecure bool) *tls.Config {
-	if insecure {
-		return &tls.Config{InsecureSkipVerify: true}
-	}
-	if p.CACertPEM != "" {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM([]byte(p.CACertPEM)) {
-			return &tls.Config{RootCAs: pool}
-		}
-	}
-	if p.TLSCertPEM != "" {
-		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM([]byte(p.TLSCertPEM)) {
-			return &tls.Config{RootCAs: pool}
-		}
-	}
-	return nil // use system defaults
 }
 
 // PeerStore manages the list of known peers
@@ -58,6 +33,18 @@ type peerStoreData struct {
 	Peers []Peer `json:"peers"`
 }
 
+type legacyPeer struct {
+	Name       string    `json:"name"`
+	PublicKey  string    `json:"public_key"`
+	PairedAt   time.Time `json:"paired_at"`
+	TLSCertPEM string    `json:"tls_cert_pem,omitempty"`
+	CACertPEM  string    `json:"ca_cert_pem,omitempty"`
+}
+
+type legacyPeerStoreData struct {
+	Peers []legacyPeer `json:"peers"`
+}
+
 // NewPeerStore loads or creates the peer store
 func NewPeerStore() (*PeerStore, error) {
 	dir, err := configDir()
@@ -66,18 +53,57 @@ func NewPeerStore() (*PeerStore, error) {
 	}
 
 	path := filepath.Join(dir, "peers.json")
+	return loadPeerStore(path)
+}
+
+func loadPeerStore(path string) (*PeerStore, error) {
 	ps := &PeerStore{path: path}
 
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if err := json.Unmarshal(data, &ps.store); err != nil {
+		var stored legacyPeerStoreData
+		if err := json.Unmarshal(data, &stored); err != nil {
 			return nil, fmt.Errorf("parse peers: %w", err)
+		}
+		needsMigration := false
+		for _, p := range stored.Peers {
+			ps.store.Peers = append(ps.store.Peers, Peer{
+				Name: p.Name, PublicKey: p.PublicKey, PairedAt: p.PairedAt,
+			})
+			needsMigration = needsMigration || p.TLSCertPEM != "" || p.CACertPEM != ""
+		}
+		if needsMigration {
+			if err := backupPeerStore(path, data); err != nil {
+				return nil, err
+			}
+			if err := ps.save(); err != nil {
+				return nil, fmt.Errorf("migrate peers: %w", err)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read peers: %w", err)
 	}
 
 	return ps, nil
+}
+
+func backupPeerStore(path string, data []byte) error {
+	backupPath := path + ".pre-system-trust.bak"
+	f, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("backup legacy peers: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("backup legacy peers: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("backup legacy peers: %w", err)
+	}
+	return nil
 }
 
 // Add adds a peer to the store and persists to disk
@@ -145,21 +171,6 @@ func (ps *PeerStore) List() []Peer {
 	result := make([]Peer, len(ps.store.Peers))
 	copy(result, ps.store.Peers)
 	return result
-}
-
-// UpdateTLSCert updates the pinned TLS certificate for a peer identified by
-// public key and persists the change to disk.
-func (ps *PeerStore) UpdateTLSCert(publicKey, certPEM string) error {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	for i, p := range ps.store.Peers {
-		if p.PublicKey == publicKey {
-			ps.store.Peers[i].TLSCertPEM = certPEM
-			return ps.save()
-		}
-	}
-	return fmt.Errorf("peer with public key %q not found", publicKey[:16]+"...")
 }
 
 // save writes the peer store to disk (must be called with lock held)

@@ -101,7 +101,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
           </h1>
           <p className="text-sm text-muted-foreground mt-2">
             {step === 'agents'
-              ? 'Configure your agents to report status to guppi'
+              ? 'Configure your agents to report status to TmuxAtlas'
               : 'Pick a theme and enable notifications'}
           </p>
         </div>

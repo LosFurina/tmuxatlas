@@ -12,9 +12,9 @@ import (
 type Tool string
 
 const (
-	ToolClaude  Tool = "claude"
-	ToolCodex   Tool = "codex"
-	ToolCopilot Tool = "copilot"
+	ToolClaude   Tool = "claude"
+	ToolCodex    Tool = "codex"
+	ToolCopilot  Tool = "copilot"
 	ToolOpenCode Tool = "opencode"
 )
 
@@ -32,12 +32,12 @@ const (
 type Event struct {
 	Tool         Tool      `json:"tool"`
 	Status       Status    `json:"status"`
-	Host         string    `json:"host,omitempty"`          // peer fingerprint (empty = local)
-	HostName     string    `json:"host_name,omitempty"`     // peer display name
-	Session      string    `json:"session"`                 // tmux session name
-	Window       int       `json:"window"`                  // tmux window index
-	Pane         string    `json:"pane,omitempty"`          // tmux pane ID (optional)
-	Message      string    `json:"message,omitempty"`       // human-readable detail
+	Host         string    `json:"host,omitempty"`      // peer fingerprint (empty = local)
+	HostName     string    `json:"host_name,omitempty"` // peer display name
+	Session      string    `json:"session"`             // tmux session name
+	Window       int       `json:"window"`              // tmux window index
+	Pane         string    `json:"pane,omitempty"`      // tmux pane ID (optional)
+	Message      string    `json:"message,omitempty"`   // human-readable detail
 	Timestamp    time.Time `json:"timestamp"`
 	AutoDetected bool      `json:"auto_detected,omitempty"` // true if detected via process tree (not hooks)
 }

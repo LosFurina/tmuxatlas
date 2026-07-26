@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Guppi is a web dashboard for monitoring and interacting with tmux sessions. Go backend + React/Vite frontend embedded in a single binary. The binary name is `guppi`.
+TmuxAtlas is a web dashboard for monitoring and interacting with tmux sessions. Go backend + React/Vite frontend embedded in a single binary. The binary name is `tmuxatlas`.
 
 ## Quick Reference
 
@@ -23,7 +23,7 @@ Guppi is a web dashboard for monitoring and interacting with tmux sessions. Go b
 - **PTY-based streaming:** Spawns `tmux attach-session` in a PTY per browser connection
 - **WebSocket bridge:** Each browser tab gets its own PTY-to-WebSocket bridge
 - **Embedded frontend:** Vite builds to `pkg/server/dist/`, Go embeds via `//go:embed`
-- **Multi-host:** Star topology with hub/peer model using ed25519 identity and mTLS
+- **Multi-host:** Star topology with Ed25519 peer identity over HTTP(S)/WebSocket transport
 
 ## Project Structure
 
@@ -45,7 +45,6 @@ pkg/
   socket/                # Unix socket communication
   preferences/           # User preferences
   stats/                 # System statistics
-  tlscert/               # TLS certificate generation
   webpush/               # Browser push notifications
 web/
   src/
@@ -57,13 +56,13 @@ web/
 ## Code Conventions
 
 ### Go
-- **Module:** `github.com/ekristen/guppi`
+- **Module:** `github.com/LosFurina/tmuxatlas`
 - **CLI framework:** urfave/cli v3
 - **Command registration:** Commands register via `init()` calling `common.RegisterCommand()`, imported as blank imports in `main.go`
 - **Logging:** logrus (`log.WithField(...)`)
 - **HTTP router:** chi v5
 - **WebSockets:** gorilla/websocket
-- **Environment variables:** Prefixed with `GUPPI_` (e.g., `GUPPI_PORT`, `GUPPI_SOCKET`, `GUPPI_HUB`)
+- **Environment variables:** Prefixed with `TMUXATLAS_` (e.g., `TMUXATLAS_LISTEN`, `TMUXATLAS_PUBLIC_URL`, `TMUXATLAS_HUB`)
 - **Testing:** Standard `testing` package, table-driven tests with `t.Run()` subtests
 
 ### Frontend
@@ -95,6 +94,6 @@ Agent detection uses multiple layers — see `docs/agent-detection.md` for full 
 ## Build & Release
 
 - GoReleaser handles multi-platform builds (linux/darwin x amd64/arm64)
-- Pre-hook runs `make frontend` before Go compilation
+- The GoReleaser pre-hook runs `npm ci` and builds the embedded frontend before Go compilation
 - Binaries are statically linked and stripped
 - Version/commit injected via ldflags

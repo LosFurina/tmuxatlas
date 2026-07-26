@@ -1,265 +1,212 @@
-# Multi-Host Setup with Tailscale / WireGuard
+# Multi-Host and Trusted Gateway Deployment
 
-guppi supports connecting multiple machines together so you can monitor and interact with tmux sessions across all your hosts from a single dashboard. This guide covers how to set it up effectively using Tailscale or any WireGuard-based VPN.
+TmuxAtlas can aggregate tmux sessions from several machines into one dashboard. The hub and peers use an application-level Ed25519 identity; public TLS belongs to a trusted gateway such as Cloudflare Tunnel or Nginx with an ACME certificate.
 
-## How It Works
+## Architecture and trust boundaries
 
-guppi uses a star topology:
-
-```
-                    ┌──────────┐
-          ┌────────►│   Hub    │◄────────┐
-          │         │ (desktop)│         │
-          │         └──────────┘         │
-          │                              │
-     ┌────┴─────┐                 ┌──────┴───┐
-     │  Peer A  │                 │  Peer B   │
-     │ (laptop) │                 │ (server)  │
-     └──────────┘                 └───────────┘
+```text
+Browser ── HTTPS/WSS ──┐
+                       ▼
+Peer ───── HTTPS/WSS ─ Gateway ── HTTP/WS on loopback ── tmuxatlas hub
+                                                        ▲
+Peer ───── HTTPS/WSS ───────────────────────────────────┘
 ```
 
-- **Hub**: One node acts as the coordinator. It aggregates session state from all peers and serves the combined dashboard.
-- **Peers**: Other nodes connect to the hub and share their tmux session state. Terminal streams (PTY data) are relayed through the hub on demand.
-- **mTLS**: All peer-to-hub communication uses mutual TLS with auto-generated certificates and ed25519 identity keys.
+- The gateway authenticates the public hostname with a system-trusted certificate and forwards to `127.0.0.1:7654`.
+- TmuxAtlas password authentication protects browser access.
+- Pairing stores Ed25519 public keys. Each peer control connection must sign a fresh challenge, independently of the gateway certificate.
+- `/ws/peer` carries long-lived state synchronization. `/ws/peer-pty?stream=...` carries remote terminal streams.
 
-## Why Tailscale / WireGuard?
+Use a dedicated hostname such as `tmuxatlas.example.com`; path-prefix hosting is not supported. The gateway must preserve the public `Host`, retain query strings, and support WebSocket upgrades. TmuxAtlas does not require or integrate with Cloudflare Access.
 
-A VPN overlay network solves several problems at once:
+## Start the hub
 
-1. **No port forwarding** — Nodes communicate over private IPs regardless of NAT, firewalls, or ISP restrictions.
-2. **Encrypted transport** — WireGuard encrypts all traffic at the network layer. Combined with guppi's mTLS, you get defense in depth.
-3. **Stable hostnames** — Tailscale provides MagicDNS names (e.g., `desktop.ts.net`) that follow machines across networks.
-4. **ACLs** — Tailscale ACLs let you restrict which machines can talk to each other, adding another layer of access control on top of guppi's pairing-based auth.
-
-## Setup with Tailscale
-
-### Prerequisites
-
-- [Tailscale](https://tailscale.com/download) installed and authenticated on all machines
-- `guppi` binary installed on all machines
-- tmux running on all machines
-
-### Step 1: Start the Hub
-
-Pick one machine to be the hub (typically your primary workstation). Note its Tailscale hostname:
+Keep the origin on loopback and describe the browser-facing URL explicitly:
 
 ```bash
-tailscale status
-# 100.x.x.x  desktop        youruser@  linux  ...
+TMUXATLAS_LISTEN=127.0.0.1:7654 \
+TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
+tmuxatlas server
 ```
 
-Start guppi with TLS SANs that include the Tailscale hostname and IP:
+`TMUXATLAS_PUBLIC_URL=https://...` enables `Secure` authentication cookies. Do not bind the HTTP origin to a public interface. If the gateway is on another machine or container, bind only to a protected private interface and restrict it with firewall rules.
+
+## Cloudflare Tunnel
+
+Create a DNS route for the tunnel, then use an ingress rule like:
+
+```yaml
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: tmuxatlas.example.com
+    service: http://127.0.0.1:7654
+    originRequest:
+      httpHostHeader: tmuxatlas.example.com
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+  - service: http_status:404
+```
+
+Run `cloudflared tunnel run YOUR_TUNNEL_ID` on the same host as TmuxAtlas. Cloudflare Tunnel supports WebSocket forwarding; the HTTP service URL is intentional because TLS terminates at Cloudflare. `httpHostHeader` preserves the public host used by same-origin WebSocket checks. No CF Access policy or service token is required by TmuxAtlas.
+
+Verify the browser dashboard and both WebSocket routes through the public hostname. If an intermediate proxy imposes idle limits, raise them for long-lived control and terminal connections.
+
+## Nginx with ACME
+
+Obtain a certificate for `tmuxatlas.example.com` with your ACME client, then configure Nginx:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name tmuxatlas.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name tmuxatlas.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/tmuxatlas.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tmuxatlas.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:7654;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 24h;
+        proxy_send_timeout 24h;
+    }
+}
+```
+
+`proxy_pass` without a replacement URI preserves the complete path and query string, including the PTY `stream` parameter. The upgrade headers apply to browser, peer-control, and peer-PTY WebSockets. Reload Nginx after validating the configuration.
+
+## Pair and run peers
+
+Generate a short-lived code on the hub:
 
 ```bash
-guppi server --tls-san desktop.ts.net --tls-san 100.x.x.x
+tmuxatlas pair generate
 ```
 
-Or set via environment variable:
+Join from each peer using the public, trusted gateway URL:
 
 ```bash
-export GUPPI_TLS_SAN=desktop.ts.net,100.x.x.x
-guppi server
+tmuxatlas pair join --hub https://tmuxatlas.example.com --code WORD-WORD-WORD
+tmuxatlas server --hub https://tmuxatlas.example.com
 ```
 
-The auto-generated TLS certificate will include these SANs, allowing peers to connect using the Tailscale hostname.
+The peer uses normal hostname verification and the operating-system trust store. There is no private CA import, certificate pin, or insecure-verification switch. Certificate rotation by Cloudflare or ACME does not require re-pairing because Ed25519 peer identity is separate from TLS.
 
-### Step 2: Pair Peers
-
-On the hub, generate a pairing code:
+For controlled local development only, an explicit plaintext hub is supported:
 
 ```bash
-guppi pair generate
-# Pairing code: ABC123 (valid for 5 minutes)
+tmuxatlas server --hub http://127.0.0.1:7654
 ```
 
-On the peer machine, join the hub:
+Bare hostnames default to a secure connection. A self-signed or hostname-invalid gateway certificate is rejected.
+
+Use `--local-only` on a peer if its local dashboard should show only that machine while the hub still receives its sessions:
 
 ```bash
-guppi pair join --hub https://desktop.ts.net:7654 --code ABC123
+tmuxatlas server --hub https://tmuxatlas.example.com --local-only
 ```
 
-This exchanges ed25519 identity keys and establishes mutual trust. Once paired, the peer's identity is stored and it can reconnect automatically.
+## systemd examples
 
-### Step 3: Start Peers
-
-On each peer machine, start guppi pointing at the hub:
-
-```bash
-guppi server --hub https://desktop.ts.net:7654
-```
-
-The peer will connect to the hub, share its tmux session state, and relay PTY connections on demand.
-
-#### Local-Only Mode
-
-If you want a peer to participate in the network but only show its own sessions in its local dashboard:
-
-```bash
-guppi server --hub https://desktop.ts.net:7654 --local-only
-```
-
-The hub still sees all sessions. This is useful for machines where you don't need the full multi-host view locally.
-
-### Step 4: Access the Dashboard
-
-Open the hub's dashboard in your browser:
-
-```
-https://desktop.ts.net:7654
-```
-
-You'll see sessions from all connected peers. Clicking a remote session opens a PTY relay through the hub — the terminal stream flows from the peer through the hub to your browser.
-
-## Setup with Generic WireGuard
-
-If you're using raw WireGuard (without Tailscale), the setup is the same — just use the WireGuard tunnel IPs instead of Tailscale hostnames.
-
-```bash
-# Hub
-guppi server --tls-san 10.0.0.1
-
-# Peer
-guppi server --hub https://10.0.0.1:7654
-```
-
-You'll need to handle DNS and key distribution yourself. The main differences from Tailscale:
-
-- No MagicDNS — use IPs or configure DNS manually
-- No automatic NAT traversal — ensure WireGuard peers can reach each other
-- No centralized ACLs — use WireGuard's AllowedIPs and firewall rules
-
-## systemd Services for Multi-Host
-
-Extend the [systemd user services](tmux-setup.md#systemd-user-service) with hub configuration:
-
-### Hub Service
+Hub:
 
 ```ini
 [Unit]
-Description=guppi web dashboard (hub)
-After=tmux-server.service tailscaled.service
-Requires=tmux-server.service
-Wants=tailscaled.service
+Description=TmuxAtlas web dashboard (hub)
+After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/guppi server --tls-san %H.ts.net
+ExecStart=%h/.local/bin/tmuxatlas server
+Environment=TMUXATLAS_LISTEN=127.0.0.1:7654
+Environment=TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com
 Restart=on-failure
 RestartSec=5
-Environment=GUPPI_PORT=7654
 
 [Install]
 WantedBy=default.target
 ```
 
-### Peer Service
+Peer:
 
 ```ini
 [Unit]
-Description=guppi web dashboard (peer)
-After=tmux-server.service tailscaled.service
-Requires=tmux-server.service
-Wants=tailscaled.service
+Description=TmuxAtlas web dashboard (peer)
+After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/guppi server --hub https://desktop.ts.net:7654
+ExecStart=%h/.local/bin/tmuxatlas server
+Environment=TMUXATLAS_HUB=https://tmuxatlas.example.com
 Restart=on-failure
 RestartSec=5
-Environment=GUPPI_PORT=7654
 
 [Install]
 WantedBy=default.target
 ```
 
-Note: `%H` in systemd expands to the machine's hostname. Adjust the hub address to match your actual hub's Tailscale hostname.
+Enable user lingering on headless hosts if the service must survive logout.
 
-## TLS Configuration
+## Upgrade from built-in TLS
 
-### Auto-Generated Certificates (Default)
+This release removes built-in certificate generation and TLS serving. The following options are rejected and must be removed from scripts and service definitions:
 
-By default, guppi generates a self-signed ECDSA P-256 certificate on first run. The certificate is stored in the guppi config directory and reused across restarts.
-
-Use `--tls-san` to add Subject Alternative Names so the certificate is valid for the hostnames/IPs peers use to connect:
-
-```bash
-guppi server --tls-san desktop.ts.net --tls-san 100.64.0.1 --tls-san desktop.local
+```text
+--port
+--no-tls
+--tls-cert
+--tls-key
+--tls-san
+--tls-reload-interval
+--insecure
+TMUXATLAS_PORT
+TMUXATLAS_NO_TLS
+TMUXATLAS_TLS_CERT
+TMUXATLAS_TLS_KEY
+TMUXATLAS_TLS_SAN
+TMUXATLAS_TLS_RELOAD_INTERVAL
+TMUXATLAS_INSECURE
 ```
 
-### Custom Certificates
+Replace `--port 7654` with `--listen 127.0.0.1:7654`, and set `--public-url https://tmuxatlas.example.com`.
 
-If you have certificates from a private CA or Let's Encrypt:
+When TmuxAtlas first reads a legacy peer store, it:
 
-```bash
-guppi server --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
-```
+1. creates `peers.json.pre-system-trust.bak` if a backup does not already exist;
+2. preserves peer names, Ed25519 public keys, and pairing timestamps;
+3. removes obsolete `ca_cert_pem` and `tls_cert_pem` fields.
 
-### Using Tailscale's Built-in Certificates
+Migration is idempotent. The old certificate and key files are not read or deleted. Keep the backup during rollout; after verifying browser login, pairing, peer state, and a remote terminal, unused TLS files may be deleted manually. To roll back, stop TmuxAtlas, restore the old binary and backup peer store, or re-pair peers.
 
-Tailscale can issue certificates for your machines from a public CA via `tailscale cert`:
+## Verification and troubleshooting
 
-```bash
-# Generate a cert for your machine's Tailscale FQDN
-tailscale cert desktop.ts.net
-
-# Use it with guppi
-guppi server --tls-cert desktop.ts.net.crt --tls-key desktop.ts.net.key
-```
-
-This eliminates browser certificate warnings since the cert is signed by a trusted CA. Note that `tailscale cert` requires HTTPS to be enabled in your Tailscale admin console.
-
-### Disabling TLS
-
-If your VPN already provides encryption (WireGuard encrypts all traffic), you can optionally disable TLS:
+Run these checks through the public hostname:
 
 ```bash
-guppi server --no-tls
+curl -I https://tmuxatlas.example.com/
+tmuxatlas peers list
 ```
 
-However, keeping TLS enabled is recommended for defense in depth — it protects against local network sniffing and provides authentication at the application layer.
+Then verify:
 
-## Security Considerations
+- browser login succeeds and the session cookie is `Secure`;
+- a peer remains online and its sessions update;
+- opening a remote session creates a working interactive terminal;
+- the gateway logs successful `101 Switching Protocols` responses for `/ws/peer` and `/ws/peer-pty`.
 
-### Defense in Depth
-
-With Tailscale + guppi, you get multiple layers of security:
-
-| Layer | Protection |
-|-------|-----------|
-| WireGuard (Tailscale) | Network-level encryption, NAT traversal, private IPs |
-| Tailscale ACLs | Which machines can communicate |
-| guppi mTLS | Peer authentication via ed25519 keys + TLS certificates |
-| guppi pairing | One-time code exchange to establish trust |
-| guppi auth | Password-based login for the web dashboard |
-
-### Recommendations
-
-- **Always use a VPN** for multi-host setups. Don't expose guppi directly to the internet.
-- **Keep pairing codes short-lived** — they expire after 5 minutes by default.
-- **Use `--local-only`** on machines that don't need to see remote sessions.
-- **Enable lingering** (`loginctl enable-linger`) on headless servers so guppi stays running.
-- **Set a strong password** for the web dashboard, especially if accessing it remotely.
-- **Use Tailscale ACLs** to restrict which machines can reach the hub's port.
-
-## Troubleshooting
-
-### Peer won't connect to hub
-
-1. Verify Tailscale connectivity: `tailscale ping desktop.ts.net`
-2. Check the hub is listening: `curl -k https://desktop.ts.net:7654/api/health`
-3. Verify pairing was completed: `guppi peers list`
-4. Check logs: `journalctl --user -u guppi.service -f`
-
-### Certificate errors
-
-If peers get TLS errors connecting to the hub:
-
-- Ensure the hub was started with the correct `--tls-san` values
-- Delete the auto-generated cert and restart to regenerate: the cert is stored in the guppi config directory
-- Use `--insecure` temporarily for debugging (not recommended for production)
-
-### Sessions not appearing
-
-- Ensure tmux is running on the peer: `tmux list-sessions`
-- Check that the peer isn't in `--local-only` mode if you expect to see its sessions on the hub
-- Verify the peer shows as connected: `guppi peers list` on the hub
+If the dashboard loads but WebSockets fail, check `Host`, `Upgrade`, and `Connection` forwarding and the proxy timeouts. If peers report certificate errors, verify DNS, certificate hostname coverage, the full ACME chain, system time, and the local operating-system trust store. Do not bypass verification.

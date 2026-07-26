@@ -1,7 +1,7 @@
 package common
 
 // NAME of the App
-var NAME = "guppi"
+var NAME = "tmuxatlas"
 
 // SUMMARY of the Version
 var SUMMARY = "v0.1.3-beta.2" // x-release-please-version

@@ -6,9 +6,9 @@ import "time"
 type Session struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
-	Host         string    `json:"host,omitempty"`         // peer fingerprint (empty = local)
-	HostName     string    `json:"host_name,omitempty"`    // peer display name
-	HostOnline   bool      `json:"host_online,omitempty"`  // whether the host peer is connected
+	Host         string    `json:"host,omitempty"`        // peer fingerprint (empty = local)
+	HostName     string    `json:"host_name,omitempty"`   // peer display name
+	HostOnline   bool      `json:"host_online,omitempty"` // whether the host peer is connected
 	Windows      []*Window `json:"windows"`
 	Created      time.Time `json:"created"`
 	Attached     bool      `json:"attached"`

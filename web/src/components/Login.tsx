@@ -4,10 +4,9 @@ interface LoginProps {
   mode: 'setup' | 'login'
   error: string | null
   onSubmit: (password: string) => Promise<boolean>
-  onTrustCert?: () => void
 }
 
-export function Login({ mode, error, onSubmit, onTrustCert }: LoginProps) {
+export function Login({ mode, error, onSubmit }: LoginProps) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
@@ -41,7 +40,7 @@ export function Login({ mode, error, onSubmit, onTrustCert }: LoginProps) {
     <div className="flex items-center justify-center h-dvh w-screen bg-background font-mono text-sm font-bold">
       <div className="w-full max-w-sm p-8">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-foreground tracking-tight">guppi</h1>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">TmuxAtlas</h1>
           <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
             all your tmux sessions<br />
             all your ai agents<br />
@@ -87,17 +86,6 @@ export function Login({ mode, error, onSubmit, onTrustCert }: LoginProps) {
             }
           </button>
         </form>
-        {onTrustCert && (
-          <div className="mt-6 text-center">
-            <button
-              type="button"
-              onClick={onTrustCert}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Need to trust the certificate?
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )

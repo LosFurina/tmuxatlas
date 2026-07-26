@@ -10,7 +10,6 @@ import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { TrustCertificate } from './components/TrustCertificate'
 import { useSessions, Session, sessionKey, parseSessionKey } from './hooks/useSessions'
 import { useHosts } from './hooks/useHosts'
 import { useToolEvents } from './hooks/useToolEvents'
@@ -21,6 +20,7 @@ import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
 import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
+import { getBrandStorage, setBrandStorage } from './lib/brandStorage'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -62,7 +62,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const terminalContainerRef = useRef<HTMLDivElement>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return localStorage.getItem('guppi:sidebar-collapsed') === 'true' } catch { return false }
+    try { return getBrandStorage('sidebar-collapsed') === 'true' } catch { return false }
   })
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -114,7 +114,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
 
   // Persist sidebar state
   useEffect(() => {
-    localStorage.setItem('guppi:sidebar-collapsed', String(sidebarCollapsed))
+    setBrandStorage('sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
   // Sync URL -> state on popstate (back/forward)
@@ -366,14 +366,14 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
       const displayName = session ? session.name : parseSessionKey(selectedSession).name
       const activeWindow = session?.windows?.find(w => w.active)
       if (activeWindow) {
-        document.title = `${displayName}:${activeWindow.index}:${activeWindow.name} — guppi`
+        document.title = `${displayName}:${activeWindow.index}:${activeWindow.name} — TmuxAtlas`
       } else {
-        document.title = `${displayName} — guppi`
+        document.title = `${displayName} — TmuxAtlas`
       }
     } else if (currentView === 'settings') {
-      document.title = 'settings — guppi'
+      document.title = 'settings — TmuxAtlas'
     } else {
-      document.title = 'guppi'
+      document.title = 'TmuxAtlas'
     }
   }, [currentView, selectedSession, sessions])
 
@@ -488,7 +488,6 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
 export default function App() {
   const prefsProvider = usePreferencesProvider()
   const { loading, authRequired, needsSetup, authenticated, error: authError, setup, login, logout } = useAuth()
-  const [showTrust, setShowTrust] = useState(() => window.location.pathname === '/trust')
   const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Re-fetch preferences after login (initial fetch may have gotten 401)
@@ -501,8 +500,8 @@ export default function App() {
   // Apply last-used theme immediately (before auth) so login page is themed
   useEffect(() => {
     try {
-      const cached = localStorage.getItem('guppi:theme')
-      const cachedCustom = localStorage.getItem('guppi:custom-theme')
+      const cached = getBrandStorage('theme')
+      const cachedCustom = getBrandStorage('custom-theme')
       if (cached) {
         applyTheme(cached, cachedCustom ? JSON.parse(cachedCustom) : undefined)
       }
@@ -514,8 +513,8 @@ export default function App() {
     if (prefsProvider.loaded) {
       applyTheme(prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme)
       try {
-        localStorage.setItem('guppi:theme', prefsProvider.prefs.theme)
-        localStorage.setItem('guppi:custom-theme', JSON.stringify(prefsProvider.prefs.custom_theme || {}))
+        setBrandStorage('theme', prefsProvider.prefs.theme)
+        setBrandStorage('custom-theme', JSON.stringify(prefsProvider.prefs.custom_theme || {}))
       } catch {}
     }
   }, [prefsProvider.loaded, prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme])
@@ -524,21 +523,17 @@ export default function App() {
     return <div className="flex items-center justify-center h-dvh w-screen bg-background" />
   }
 
-  if (showTrust || window.location.pathname === '/trust') {
-    return <TrustCertificate onBack={() => { setShowTrust(false); window.history.pushState(null, '', '/') }} />
-  }
-
   if (authRequired && needsSetup) {
     const handleSetup = async (password: string) => {
       const ok = await setup(password)
       if (ok) setShowOnboarding(true)
       return ok
     }
-    return <Login mode="setup" error={authError} onSubmit={handleSetup} onTrustCert={() => { setShowTrust(true); window.history.pushState(null, '', '/trust') }} />
+    return <Login mode="setup" error={authError} onSubmit={handleSetup} />
   }
 
   if (authRequired && !authenticated) {
-    return <Login mode="login" error={authError} onSubmit={login} onTrustCert={() => { setShowTrust(true); window.history.pushState(null, '', '/trust') }} />
+    return <Login mode="login" error={authError} onSubmit={login} />
   }
 
   if (authenticated && showOnboarding) {
@@ -546,7 +541,7 @@ export default function App() {
       <PreferencesContext.Provider value={prefsProvider}>
         <Setup fullPage onComplete={() => {
           setShowOnboarding(false)
-          try { localStorage.setItem('guppi:setup-seen', 'true') } catch {}
+          try { setBrandStorage('setup-seen', 'true') } catch {}
         }} />
       </PreferencesContext.Provider>
     )

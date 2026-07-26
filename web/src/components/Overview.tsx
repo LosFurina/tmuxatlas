@@ -22,7 +22,7 @@ interface SystemStats {
   arch: string
   cpus: number
   goroutines: number
-  guppi_mem_mb: number
+  tmuxatlas_mem_mb: number
   load?: { '1m': number; '5m': number; '15m': number }
   uptime_seconds?: number
   memory?: { total_mb: number; used_mb: number; available_mb: number; percent: number }
@@ -206,9 +206,9 @@ function SystemStatsCard({ system }: { system: SystemStats }) {
           </div>
         </div>
         <div>
-          <div className="text-[10px] text-muted-foreground/60 mb-0.5">Guppi Memory</div>
+          <div className="text-[10px] text-muted-foreground/60 mb-0.5">TmuxAtlas Memory</div>
           <div className="text-[13px] text-foreground">
-            {system.guppi_mem_mb.toFixed(1)} MB
+            {system.tmuxatlas_mem_mb.toFixed(1)} MB
           </div>
         </div>
         <div>

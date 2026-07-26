@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ekristen/guppi/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 // SystemStats reads system info from /proc (Linux) or falls back to runtime info
@@ -22,7 +22,7 @@ func SystemStats() map[string]interface{} {
 	// Memory stats from Go runtime
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
-	stats["guppi_mem_mb"] = float64(m.Alloc) / 1024 / 1024
+	stats["tmuxatlas_mem_mb"] = float64(m.Alloc) / 1024 / 1024
 
 	// Load average from /proc/loadavg
 	if data, err := os.ReadFile("/proc/loadavg"); err == nil {

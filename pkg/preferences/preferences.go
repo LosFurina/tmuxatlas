@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 )
 
 type Terminal struct {
@@ -52,8 +54,8 @@ func Default() *Preferences {
 			FontFamily: "Space Mono",
 			Scrollback: 5000,
 		},
-		Theme:        "retro-blue",
-		CustomTheme:  map[string]string{},
+		Theme:       "retro-blue",
+		CustomTheme: map[string]string{},
 		Sidebar: Sidebar{
 			DefaultCollapsed: false,
 			HiddenSessions:   []string{},
@@ -84,11 +86,7 @@ type Store struct {
 }
 
 func configDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "guppi"), nil
+	return paths.ConfigDir()
 }
 
 func NewStore() (*Store, error) {

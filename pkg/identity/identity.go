@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 )
 
 // Identity represents this node's cryptographic identity
@@ -76,17 +78,9 @@ func Verify(publicKeyB64 string, message, signature []byte) bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), message, signature)
 }
 
-// configDir returns the guppi config directory, creating it if needed
+// configDir returns the TmuxAtlas config directory, creating it if needed.
 func configDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
-	}
-	dir := filepath.Join(home, ".config", "guppi")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create config dir: %w", err)
-	}
-	return dir, nil
+	return paths.ConfigDir()
 }
 
 // identityPath returns the path to the identity file

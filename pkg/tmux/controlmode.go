@@ -17,7 +17,7 @@ const (
 	DefaultRefreshDelay = 100 * time.Millisecond
 
 	// controlSessionName is the tmux session used for the control mode client
-	controlSessionName = "guppi-ctrl"
+	controlSessionName = "tmuxatlas-ctrl"
 
 	// maxBackoff caps the reconnect backoff duration
 	maxBackoff = 30 * time.Second

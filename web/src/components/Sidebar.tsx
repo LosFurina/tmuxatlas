@@ -5,6 +5,7 @@ import { ActivitySnapshot } from '../hooks/useActivity'
 import { usePreferences } from '../hooks/usePreferences'
 import { toolColors, statusConfig } from '../theme'
 import { cn } from '../lib/utils'
+import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
 
 interface SidebarProps {
   sessions: Session[]
@@ -79,7 +80,7 @@ function Sparkline({ data, height = 16 }: { data: number[]; height?: number }) {
 
 function getHiddenSessions(): Set<string> {
   try {
-    const stored = localStorage.getItem('guppi:hidden-sessions')
+    const stored = getBrandStorage('hidden-sessions')
     return stored ? new Set(JSON.parse(stored)) : new Set()
   } catch {
     return new Set()
@@ -87,7 +88,7 @@ function getHiddenSessions(): Set<string> {
 }
 
 function setHiddenSessions(hidden: Set<string>) {
-  localStorage.setItem('guppi:hidden-sessions', JSON.stringify([...hidden]))
+  setBrandStorage('hidden-sessions', JSON.stringify([...hidden]))
 }
 
 export function Sidebar({

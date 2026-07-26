@@ -1,15 +1,13 @@
 package peer
 
 import (
-
-	"net/url"
 	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/activity"
-	"github.com/ekristen/guppi/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/activity"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
 // PTYManager manages local PTY sessions spawned on behalf of remote browsers
@@ -154,33 +152,15 @@ func (pm *PTYManager) cleanup(streamID string) {
 }
 
 func (pm *PTYManager) connectPTYWebSocket(streamID string) (*websocket.Conn, error) {
-	hubAddr := pm.client.HubURL()
-	if !hasScheme(hubAddr) {
-		hubAddr = "wss://" + hubAddr
-	}
-	u, err := url.Parse(hubAddr)
+	u, err := hubWebSocketURL(pm.client.HubURL(), "/ws/peer-pty")
 	if err != nil {
 		return nil, err
 	}
-
-	if u.Scheme == "https" {
-		u.Scheme = "wss"
-	} else if u.Scheme == "http" {
-		u.Scheme = "ws"
-	}
-	u.Path = "/ws/peer-pty"
 	q := u.Query()
 	q.Set("stream", streamID)
 	u.RawQuery = q.Encode()
 
-	dialer := websocket.DefaultDialer
-	if tlsCfg := pm.client.TLSConfig(); tlsCfg != nil {
-		dialer = &websocket.Dialer{
-			TLSClientConfig: tlsCfg,
-		}
-	}
-
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		return nil, err
 	}

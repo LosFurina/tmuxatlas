@@ -1,4 +1,4 @@
-# GUPPI
+# TmuxAtlas
 
 all your tmux sessions, all your agents, one interface
 
@@ -6,9 +6,9 @@ get notified when it matters
 
 ---
 
-## What is GUPPI?
+## What is TmuxAtlas?
 
-guppi gives you a real-time web interface for your tmux sessions. It renders full terminal output in the browser using xterm.js backed by PTY connections, so you get the exact same view as your local terminal — borders, splits, colors, and all.
+TmuxAtlas gives you a real-time web interface for your tmux sessions. It renders full terminal output in the browser using xterm.js backed by PTY connections, so you get the exact same view as your local terminal — borders, splits, colors, and all.
 
 It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running inside your sessions, surfacing their status so you know when an agent needs input, hits an error, or finishes a task.
 
@@ -21,41 +21,52 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 - **Quick switcher** — Ctrl+K to jump between sessions and windows instantly, hands never leave the keyboard.
 - **Single binary** — Go backend with the React frontend embedded. No separate processes, no Node runtime needed in production.
 - **Unix socket + HTTP** — local CLI notifications go through a Unix socket for zero-config, with HTTP as fallback.
-- **TLS first** -- TLS out of the gate, with easy instructions on trusting your CA certificate.
+- **Gateway friendly** — serves a loopback HTTP origin designed for trusted TLS termination at Cloudflare Tunnel or Nginx.
 
 ### Non-goals
 
-- **Multi-user** — guppi is a single-user tool. One person, one dashboard. There are no user accounts, roles, or shared access controls.
-- **Agent orchestration** — guppi doesn't start, stop, or control your agents. It watches and reports. You run your agents however you want; guppi just tells you what they're doing.
-- **tmux management** — guppi doesn't configure or manage your tmux setup. Your `.tmux.conf`, layouts, and workflows stay yours.
+- **Multi-user** — TmuxAtlas is a single-user tool. One person, one dashboard. There are no user accounts, roles, or shared access controls.
+- **Agent orchestration** — TmuxAtlas doesn't start, stop, or control your agents. It watches and reports. You run your agents however you want; TmuxAtlas just tells you what they're doing.
+- **tmux management** — TmuxAtlas doesn't configure or manage your tmux setup. Your `.tmux.conf`, layouts, and workflows stay yours.
 
 ## Installation
 
-### Using dist (recommended)
+### Install the latest release
 
-[dist](https://github.com/ekristen/distillery) installs binaries from GitHub releases with checksum verification and multi-version support.
-
-```bash
-dist install ekristen/guppi
-```
-
-### Quick install
+Review [install.sh](install.sh), then run:
 
 ```bash
-curl -sSL https://get.guppi.sh | sh
+curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh | sh
 ```
 
-This detects your platform, downloads the latest release, and puts `guppi` in `/usr/local/bin` (or `~/.local/bin` if not writable). You can pin a version with `VERSION=v0.1.0 curl -sSL ... | sh`.
+The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Release, verifies its SHA-256 checksum, and installs `tmuxatlas` to `~/.local/bin`. Override the defaults when needed:
+
+```bash
+TMUXATLAS_VERSION=v0.1.3-beta.3 \
+TMUXATLAS_INSTALL_DIR=/usr/local/bin \
+sh install.sh
+```
+
+To register the installed binary as a user service afterward:
+
+```bash
+tmuxatlas install
+```
+
+### Download a release
+
+Download the appropriate archive for your platform from the
+[LosFurina/tmuxatlas releases](https://github.com/LosFurina/tmuxatlas/releases) page.
 
 ### From source
 
 Requires [Go](https://go.dev/) 1.25+ and [Node.js](https://nodejs.org/) 18+.
 
 ```bash
-git clone https://github.com/ekristen/guppi.git
-cd guppi
+git clone https://github.com/LosFurina/tmuxatlas.git
+cd tmuxatlas
 make build
-# Binary is at ./dist/guppi
+# Binary is at ./dist/tmuxatlas
 ```
 
 ## Usage
@@ -65,27 +76,37 @@ make build
 Make sure [tmux](https://github.com/tmux/tmux) is running with at least one session, then:
 
 ```bash
-guppi server
+tmuxatlas server
 ```
 
-Open https://localhost:7654 in your browser. On first launch you'll set a password, then guppi will guide you through agent setup.
+Open http://localhost:7654 in your browser. On first launch you'll set a password, then TmuxAtlas will guide you through agent setup.
+
+For remote access, keep TmuxAtlas on loopback and put a trusted HTTPS gateway in front:
+
+```bash
+TMUXATLAS_LISTEN=127.0.0.1:7654 \
+TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
+tmuxatlas server
+```
+
+`TMUXATLAS_PUBLIC_URL` tells TmuxAtlas that the browser-facing connection is HTTPS, so authentication cookies receive the `Secure` attribute. See [Multi-host and trusted gateway deployment](docs/multi-host.md) for Cloudflare Tunnel and Nginx+ACME examples.
 
 ### 2. Configure agent hooks
 
-guppi tracks AI agents running in your tmux sessions, but agents need hooks configured so they can report their status. Run:
+TmuxAtlas tracks AI agents running in your tmux sessions, but agents need hooks configured so they can report their status. Run:
 
 ```bash
-guppi agent-setup
+tmuxatlas agent-setup
 ```
 
 This auto-detects which agents you have installed and configures their hooks:
 
 - **Claude Code** — hooks in `~/.claude/settings.json`
 - **Codex** — `notify` command in `~/.codex/config.toml`
-- **GitHub Copilot CLI** — hooks in `~/.copilot/hooks/guppi.json`
-- **OpenCode** — plugin in `~/.config/opencode/plugins/guppi.js`
+- **GitHub Copilot CLI** — hooks in `~/.copilot/hooks/tmuxatlas.json`
+- **OpenCode** — plugin in `~/.config/opencode/plugins/tmuxatlas.js`
 
-If you're running guppi in a multi-host setup, run `guppi agent-setup` on each machine where you use agents.
+If you're running TmuxAtlas in a multi-host setup, run `tmuxatlas agent-setup` on each machine where you use agents.
 
 You can check hook status any time in the web UI under **Settings > Agents**, or by visiting `/setup`.
 
@@ -117,9 +138,9 @@ Press `Ctrl+/` (or `Cmd+/` on macOS) to see all shortcuts, or click the `?` in t
 You can also send status updates from scripts or the command line:
 
 ```bash
-guppi notify -t claude -s waiting -m "Needs approval"
-guppi notify -t codex -s active
-guppi notify -t claude -s completed
+tmuxatlas notify -t claude -s waiting -m "Needs approval"
+tmuxatlas notify -t codex -s active
+tmuxatlas notify -t claude -s completed
 ```
 
 The tmux session, window, and pane are auto-detected when run inside tmux.
@@ -145,7 +166,7 @@ Browser  <──WebSocket──>  Go Server  <──PTY──>  tmux attach-sess
                               └── Unix socket (local CLI notifications)
 ```
 
-Each browser tab gets its own PTY process running `tmux attach-session`. tmux handles all rendering natively — guppi just bridges the PTY output to xterm.js over a WebSocket. Window switching uses the tmux `select-window` command; tmux re-renders through the existing PTY connection.
+Each browser tab gets its own PTY process running `tmux attach-session`. tmux handles all rendering natively — TmuxAtlas just bridges the PTY output to xterm.js over a WebSocket. Window switching uses the tmux `select-window` command; tmux re-renders through the existing PTY connection.
 
 State changes (new sessions, window renames, pane activity) are detected via tmux control mode and broadcast to all connected clients over a separate WebSocket.
 
@@ -178,39 +199,48 @@ Push alerts (via the Web Push API) work independently of the browser tab, includ
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GUPPI_PORT` | `7654` | HTTP server port |
-| `GUPPI_SOCKET` | auto | Unix socket path for local CLI |
-| `GUPPI_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
-| `GUPPI_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
-| `GUPPI_URL` | `https://localhost:7654` | Server URL for notify/agent-setup |
-| `GUPPI_NO_AUTH` | `false` | Disable authentication |
-| `GUPPI_NO_TLS` | `false` | Disable TLS (serve plain HTTP) |
-| `GUPPI_TLS_CERT` | auto | Path to TLS certificate file |
-| `GUPPI_TLS_KEY` | auto | Path to TLS private key file |
-| `GUPPI_TLS_SAN` | | Additional TLS SANs (IPs or hostnames) |
-| `GUPPI_HUB` | | Hub address for peer mode |
-| `GUPPI_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
-| `GUPPI_INSECURE` | `false` | Skip TLS verification when connecting to hub |
-| `GUPPI_TLS_RELOAD_INTERVAL` | `60s` | Interval between TLS cert file change checks |
+| `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
+| `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
+| `TMUXATLAS_SOCKET` | auto | Unix socket path for local CLI |
+| `TMUXATLAS_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
+| `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
+| `TMUXATLAS_URL` | `http://localhost:7654` | Server URL for notify/agent-setup |
+| `TMUXATLAS_NO_AUTH` | `false` | Disable authentication |
+| `TMUXATLAS_HUB` | | Hub URL for peer mode; use the gateway's trusted HTTPS URL |
+| `TMUXATLAS_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
 
 ### CLI flags
 
 ```
-guppi server [flags]
-  -p, --port int                  HTTP server port (default 7654)
+tmuxatlas server [flags]
+      --listen string             HTTP/WS origin listen address (default "127.0.0.1:7654")
+      --public-url string         Browser-facing absolute URL (default "http://localhost:7654")
       --discovery-interval int    Session discovery interval in seconds (default 2)
       --no-control-mode           Disable tmux control mode (use polling only)
       --socket string             Unix socket path (auto-detected if omitted)
       --no-auth                   Disable authentication (not recommended for remote access)
-      --no-tls                    Disable TLS (serve plain HTTP)
-      --tls-cert string           Path to TLS certificate file (auto-generated if omitted)
-      --tls-key string            Path to TLS private key file (auto-generated if omitted)
-      --tls-san strings           Additional TLS SANs (IPs or hostnames, repeatable)
-      --hub string                Hub address for peer mode (e.g. https://desktop.ts.net:7654)
+      --hub string                Trusted hub URL for peer mode (e.g. https://tmuxatlas.example.com)
       --local-only                Only show local sessions in the web UI
-      --insecure                  Skip TLS verification when connecting to hub
-      --tls-reload-interval duration  Interval between TLS cert file change checks (default 60s)
 ```
+
+### Upgrading from guppi
+
+TmuxAtlas automatically copies existing configuration from `~/.config/guppi` to `~/.config/tmuxatlas` and migrates application data such as Web Push keys. The original directories are retained for rollback and existing files in the new directory are never overwritten.
+
+The old `GUPPI_*` runtime variables remain accepted as deprecated aliases, but new deployments should use `TMUXATLAS_*`. After installing the renamed binary:
+
+```bash
+tmuxatlas install
+tmuxatlas agent-setup
+```
+
+The first command installs the new `tmuxatlas.service` or `com.tmuxatlas.server` service and stops the old service while retaining its definition. The second rewrites agent commands and removes legacy Copilot/OpenCode hook files so events are not sent twice.
+
+### Upgrading from built-in TLS
+
+Built-in TLS and private certificate trust have been removed. Before upgrading a remote deployment, configure a trusted gateway and remove `--port`, `--no-tls`, `--tls-cert`, `--tls-key`, `--tls-san`, `--tls-reload-interval`, `--insecure`, and their corresponding environment variables. Use `--listen` and `--public-url` instead.
+
+Legacy peer records are migrated automatically: TmuxAtlas preserves each peer's name, Ed25519 public key, and pairing time, removes only obsolete CA/leaf-certificate fields, and writes a one-time `peers.json.pre-system-trust.bak` rollback copy. Existing certificate files are deliberately left untouched. After verifying the new gateway deployment, you may manually delete unused certificate and key files from the TmuxAtlas configuration directory.
 
 ## FAQ
 

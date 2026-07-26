@@ -12,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
-	"github.com/ekristen/guppi/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/common"
 )
 
 type agentConfig struct {
@@ -20,7 +20,7 @@ type agentConfig struct {
 	key      string
 	binary   string
 	detected bool
-	setup    func(serverURL, guppiBin string, resilient bool, extraDirs []string) error
+	setup    func(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error
 }
 
 func Execute(ctx context.Context, c *cli.Command) error {
@@ -36,15 +36,15 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		extraDirs[parts[0]] = append(extraDirs[parts[0]], parts[1])
 	}
 
-	// Find guppi binary path
-	guppiBin, err := os.Executable()
+	// Find tmuxatlas binary path
+	tmuxatlasBin, err := os.Executable()
 	if err != nil {
-		guppiBin = "guppi"
+		tmuxatlasBin = "tmuxatlas"
 	}
 
 	// If running `go run`, use the binary name directly
-	if strings.Contains(guppiBin, "go-build") {
-		guppiBin = "guppi"
+	if strings.Contains(tmuxatlasBin, "go-build") {
+		tmuxatlasBin = "tmuxatlas"
 	}
 
 	agents := []agentConfig{
@@ -105,7 +105,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 			}
 		} else {
 			fmt.Printf("Configuring hooks for %s...\n", agent.name)
-			if err := agent.setup(serverURL, guppiBin, resilient, extras); err != nil {
+			if err := agent.setup(serverURL, tmuxatlasBin, resilient, extras); err != nil {
 				logrus.WithError(err).WithField("agent", agent.name).Warn("failed to configure")
 				fmt.Printf("  Warning: %v\n", err)
 			} else {
@@ -120,12 +120,12 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Agent hooks configured. They will notify guppi at:", serverURL)
+	fmt.Println("Agent hooks configured. They will notify TmuxAtlas at:", serverURL)
 	return nil
 }
 
 // setupClaude configures Claude Code hooks in ~/.claude/settings.json and any extra dirs
-func setupClaude(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
+func setupClaude(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -133,14 +133,14 @@ func setupClaude(serverURL, guppiBin string, resilient bool, extraDirs []string)
 
 	dirs := append([]string{filepath.Join(homeDir, ".claude")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupClaudeDir(dir, guppiBin, resilient); err != nil {
+		if err := setupClaudeDir(dir, tmuxatlasBin, resilient); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func setupClaudeDir(configDir, guppiBin string, resilient bool) error {
+func setupClaudeDir(configDir, tmuxatlasBin string, resilient bool) error {
 	settingsPath := filepath.Join(configDir, "settings.json")
 
 	// Read existing settings
@@ -158,7 +158,7 @@ func setupClaudeDir(configDir, guppiBin string, resilient bool) error {
 	}
 
 	// Notify auto-discovers the unix socket, so no --server needed
-	notifyCmd := fmt.Sprintf("%s notify", guppiBin)
+	notifyCmd := fmt.Sprintf("%s notify", tmuxatlasBin)
 
 	suffix := ""
 	if resilient {
@@ -224,7 +224,7 @@ func setupClaudeDir(configDir, guppiBin string, resilient bool) error {
 }
 
 // setupCodex configures Codex CLI via ~/.codex/config.toml and any extra dirs
-func setupCodex(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
+func setupCodex(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -232,7 +232,7 @@ func setupCodex(serverURL, guppiBin string, resilient bool, extraDirs []string) 
 
 	dirs := append([]string{filepath.Join(homeDir, ".codex")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupCodexDir(dir, guppiBin, resilient); err != nil {
+		if err := setupCodexDir(dir, tmuxatlasBin, resilient); err != nil {
 			return err
 		}
 	}
@@ -242,7 +242,7 @@ func setupCodex(serverURL, guppiBin string, resilient bool, extraDirs []string) 
 // setupCodexDir configures a single Codex config directory.
 // Codex supports a `notify` key in config.toml that fires when the agent
 // needs user attention. The value is an argv array passed to execvp.
-func setupCodexDir(configDir, guppiBin string, resilient bool) error {
+func setupCodexDir(configDir, tmuxatlasBin string, resilient bool) error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return err
 	}
@@ -250,18 +250,18 @@ func setupCodexDir(configDir, guppiBin string, resilient bool) error {
 	configPath := filepath.Join(configDir, "config.toml")
 
 	// Codex passes the event JSON as argv[1] to the notify command.
-	// guppi notify --event-data parses it natively — no bash/jq needed.
+	// tmuxatlas notify --event-data parses it natively — no bash/jq needed.
 	var notifyLine string
 	if resilient {
 		// Wrap in bash to support || true — Codex appends event JSON as $1
 		notifyLine = fmt.Sprintf(
-			`notify = ["bash", "-c", "%s notify -t codex --event-data \"$1\" || true", "--"] # guppi-agent-hook`,
-			guppiBin,
+			`notify = ["bash", "-c", "%s notify -t codex --event-data \"$1\" || true", "--"] # tmuxatlas-agent-hook`,
+			tmuxatlasBin,
 		)
 	} else {
 		notifyLine = fmt.Sprintf(
-			`notify = ["%s", "notify", "-t", "codex", "--event-data"] # guppi-agent-hook`,
-			guppiBin,
+			`notify = ["%s", "notify", "-t", "codex", "--event-data"] # tmuxatlas-agent-hook`,
+			tmuxatlasBin,
 		)
 	}
 
@@ -324,8 +324,8 @@ func setupCodexDir(configDir, guppiBin string, resilient bool) error {
 	return nil
 }
 
-// setupCopilot configures GitHub Copilot CLI hooks via ~/.copilot/hooks/guppi.json and any extra dirs
-func setupCopilot(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
+// setupCopilot configures GitHub Copilot CLI hooks via ~/.copilot/hooks/tmuxatlas.json and any extra dirs
+func setupCopilot(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -333,7 +333,7 @@ func setupCopilot(serverURL, guppiBin string, resilient bool, extraDirs []string
 
 	dirs := append([]string{filepath.Join(homeDir, ".copilot")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupCopilotDir(dir, guppiBin, resilient); err != nil {
+		if err := setupCopilotDir(dir, tmuxatlasBin, resilient); err != nil {
 			return err
 		}
 	}
@@ -342,14 +342,14 @@ func setupCopilot(serverURL, guppiBin string, resilient bool, extraDirs []string
 
 // setupCopilotDir configures a single Copilot config directory.
 // Copilot CLI supports global hooks in hooks/ as JSON files.
-func setupCopilotDir(configDir, guppiBin string, resilient bool) error {
+func setupCopilotDir(configDir, tmuxatlasBin string, resilient bool) error {
 	hooksDir := filepath.Join(configDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return err
 	}
 
-	hooksPath := filepath.Join(hooksDir, "guppi.json")
-	notifyCmd := fmt.Sprintf("%s notify", guppiBin)
+	hooksPath := filepath.Join(hooksDir, "tmuxatlas.json")
+	notifyCmd := fmt.Sprintf("%s notify", tmuxatlasBin)
 
 	suffix := ""
 	if resilient {
@@ -360,7 +360,7 @@ func setupCopilotDir(configDir, guppiBin string, resilient bool) error {
 		return map[string]interface{}{
 			"type":    "command",
 			"bash":    fmt.Sprintf("%s -t copilot -s %s -m '%s'%s", notifyCmd, status, message, suffix),
-			"comment": "guppi agent hook",
+			"comment": "tmuxatlas agent hook",
 		}
 	}
 
@@ -386,11 +386,12 @@ func setupCopilotDir(configDir, guppiBin string, resilient bool) error {
 	}
 
 	fmt.Printf("  Wrote hooks to %s\n", hooksPath)
+	removeLegacyFile(filepath.Join(hooksDir, "guppi.json"))
 	return nil
 }
 
 // setupOpenCode configures OpenCode via native plugin in ~/.config/opencode and any extra dirs
-func setupOpenCode(serverURL, guppiBin string, resilient bool, extraDirs []string) error {
+func setupOpenCode(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -398,14 +399,14 @@ func setupOpenCode(serverURL, guppiBin string, resilient bool, extraDirs []strin
 
 	dirs := append([]string{filepath.Join(homeDir, ".config", "opencode")}, extraDirs...)
 	for _, dir := range dirs {
-		if err := setupOpenCodeDir(dir, guppiBin); err != nil {
+		if err := setupOpenCodeDir(dir, tmuxatlasBin); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func setupOpenCodeDir(configDir, guppiBin string) error {
+func setupOpenCodeDir(configDir, tmuxatlasBin string) error {
 	pluginsDir := filepath.Join(configDir, "plugins")
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		return err
@@ -413,13 +414,13 @@ func setupOpenCodeDir(configDir, guppiBin string) error {
 
 	// Bun's $ uses backtick template literals which conflict with Go raw strings,
 	// so we build the JS content via string concatenation.
-	quotedBin := fmt.Sprintf("%q", guppiBin)
-	plugin := "export const GuppiPlugin = async ({ $ }) => {\n" +
-		"  const guppi = " + quotedBin + ";\n" +
+	quotedBin := fmt.Sprintf("%q", tmuxatlasBin)
+	plugin := "export const TmuxAtlasPlugin = async ({ $ }) => {\n" +
+		"  const tmuxatlas = " + quotedBin + ";\n" +
 		"\n" +
 		"  const notify = async (status, message) => {\n" +
 		"    try {\n" +
-		"      await $`${guppi} notify -t opencode -s ${status} -m ${message}`.quiet();\n" +
+		"      await $`${tmuxatlas} notify -t opencode -s ${status} -m ${message}`.quiet();\n" +
 		"    } catch (e) {\n" +
 		"      // Silent - monitoring should never crash the host tool\n" +
 		"    }\n" +
@@ -435,32 +436,38 @@ func setupOpenCodeDir(configDir, guppiBin string) error {
 		"  };\n" +
 		"};\n"
 
-	pluginFile := filepath.Join(pluginsDir, "guppi.js")
+	pluginFile := filepath.Join(pluginsDir, "tmuxatlas.js")
 	if err := os.WriteFile(pluginFile, []byte(plugin), 0o644); err != nil {
 		return err
 	}
 
 	fmt.Printf("  Wrote plugin to %s\n", pluginFile)
 
-	// Clean up legacy hook script if it exists
-	legacyHook := filepath.Join(configDir, "guppi-hook.sh")
-	if _, err := os.Stat(legacyHook); err == nil {
-		if err := os.Remove(legacyHook); err != nil {
-			fmt.Printf("  Warning: could not remove legacy hook %s: %v\n", legacyHook, err)
-		} else {
-			fmt.Printf("  Removed legacy hook %s\n", legacyHook)
-		}
-	}
+	// Prevent duplicate events from pre-rename plugins and older hook scripts.
+	removeLegacyFile(filepath.Join(pluginsDir, "guppi.js"))
+	removeLegacyFile(filepath.Join(configDir, "guppi-hook.sh"))
+	removeLegacyFile(filepath.Join(configDir, "tmuxatlas-hook.sh"))
 
 	return nil
+}
+
+func removeLegacyFile(path string) {
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		fmt.Printf("  Warning: could not remove legacy hook %s: %v\n", path, err)
+		return
+	}
+	fmt.Printf("  Removed legacy hook %s\n", path)
 }
 
 func init() {
 	flags := []cli.Flag{
 		&cli.StringFlag{
 			Name:    "server",
-			Usage:   "guppi server URL",
-			Sources: cli.EnvVars("GUPPI_URL"),
+			Usage:   "TmuxAtlas server URL",
+			Sources: cli.EnvVars("TMUXATLAS_URL", "GUPPI_URL"),
 			Value:   "http://localhost:7654",
 		},
 		&cli.BoolFlag{
@@ -479,9 +486,9 @@ func init() {
 
 	cmd := &cli.Command{
 		Name:  "agent-setup",
-		Usage: "configure AI agent hooks to notify guppi",
+		Usage: "configure AI agent hooks to notify TmuxAtlas",
 		Description: `Detects installed AI coding tools and configures their hooks
-to send status notifications to the guppi server.
+to send status notifications to the TmuxAtlas server.
 
 Supported agents:
   - Claude Code (claude)

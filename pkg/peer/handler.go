@@ -10,9 +10,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
-	"github.com/ekristen/guppi/pkg/identity"
-	"github.com/ekristen/guppi/pkg/tmux"
-	"github.com/ekristen/guppi/pkg/toolevents"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/tmux"
+	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
 var wsUpgrader = websocket.Upgrader{
@@ -30,7 +30,6 @@ type Handler struct {
 	tracker   *toolevents.Tracker
 	pairing   *identity.PairingManager
 	ptyRelay  *PTYRelay
-	CACertPEM string // CA certificate PEM to include in pairing responses
 }
 
 // NewHandler creates a new peer connection handler
@@ -311,14 +310,11 @@ func (h *Handler) HandlePairing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Respond with hub identity (include CA cert if available)
+	// Respond with the hub identity. TLS trust is provided by the system trust store.
 	resp := map[string]string{
 		"status":     "paired",
 		"name":       h.manager.LocalName(),
 		"public_key": h.manager.identity.PublicKey,
-	}
-	if h.CACertPEM != "" {
-		resp["ca_cert_pem"] = h.CACertPEM
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
