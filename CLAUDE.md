@@ -97,3 +97,4 @@ Agent detection uses multiple layers — see `docs/agent-detection.md` for full 
 - The GoReleaser pre-hook runs `npm ci` and builds the embedded frontend before Go compilation
 - Binaries are statically linked and stripped
 - Version/commit injected via ldflags
+- Pushing a semantic version tag such as `v0.2.0` or `v0.2.0-beta.1` runs CI, creates a draft GitHub Release, uploads signed checksums and SBOMs, and publishes the Release only after every job succeeds

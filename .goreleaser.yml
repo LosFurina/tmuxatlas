@@ -49,6 +49,6 @@ checksum:
   name_template: "checksums.txt"
 snapshot:
   version_template: '{{ trimprefix .Summary "v" }}'
-# We are skipping changelog because we are using release-please
+# GitHub generates release notes when the tag-triggered workflow creates the draft.
 changelog:
   disable: true
