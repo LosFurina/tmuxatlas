@@ -2,12 +2,15 @@ package identity
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 )
+
+var ErrPeerConflict = errors.New("peer identity conflict")
 
 // Peer represents a known paired peer
 type Peer struct {
@@ -72,6 +75,9 @@ func loadPeerStore(path string) (*PeerStore, error) {
 			})
 			needsMigration = needsMigration || p.TLSCertPEM != "" || p.CACertPEM != ""
 		}
+		if err := validatePeerRecords(ps.store.Peers); err != nil {
+			return nil, fmt.Errorf("validate peers %s: %w", path, err)
+		}
 		if needsMigration {
 			if err := backupPeerStore(path, data); err != nil {
 				return nil, err
@@ -85,6 +91,35 @@ func loadPeerStore(path string) (*PeerStore, error) {
 	}
 
 	return ps, nil
+}
+
+func validatePeer(peer Peer) error {
+	if err := validateStoredName(peer.Name); err != nil {
+		return fmt.Errorf("invalid name: %w", err)
+	}
+	if _, err := ParsePublicKey(peer.PublicKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePeerRecords(peers []Peer) error {
+	names := make(map[string]int, len(peers))
+	keys := make(map[string]int, len(peers))
+	for i, peer := range peers {
+		if err := validatePeer(peer); err != nil {
+			return fmt.Errorf("peers[%d] (%q): %w", i, peer.Name, err)
+		}
+		if previous, exists := names[peer.Name]; exists {
+			return fmt.Errorf("peers[%d] (%q): duplicate name also used by peers[%d]", i, peer.Name, previous)
+		}
+		if previous, exists := keys[peer.PublicKey]; exists {
+			return fmt.Errorf("peers[%d] (%q): duplicate public key also used by peers[%d]", i, peer.Name, previous)
+		}
+		names[peer.Name] = i
+		keys[peer.PublicKey] = i
+	}
+	return nil
 }
 
 func backupPeerStore(path string, data []byte) error {
@@ -111,16 +146,29 @@ func (ps *PeerStore) Add(peer Peer) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	// Replace if public key already exists
-	for i, p := range ps.store.Peers {
-		if p.PublicKey == peer.PublicKey {
-			ps.store.Peers[i] = peer
-			return ps.save()
+	normalizedName, err := NormalizeName(peer.Name)
+	if err != nil {
+		return fmt.Errorf("invalid peer: %w", err)
+	}
+	peer.Name = normalizedName
+	if err := validatePeer(peer); err != nil {
+		return fmt.Errorf("invalid peer: %w", err)
+	}
+	for _, existing := range ps.store.Peers {
+		if existing.PublicKey == peer.PublicKey {
+			return fmt.Errorf("%w: public key is already paired as %q", ErrPeerConflict, existing.Name)
+		}
+		if existing.Name == peer.Name {
+			return fmt.Errorf("%w: name %q is already paired", ErrPeerConflict, peer.Name)
 		}
 	}
 
-	ps.store.Peers = append(ps.store.Peers, peer)
-	return ps.save()
+	updated := append(append([]Peer(nil), ps.store.Peers...), peer)
+	if err := ps.saveData(peerStoreData{Peers: updated}); err != nil {
+		return err
+	}
+	ps.store.Peers = updated
+	return nil
 }
 
 // Remove removes a peer by name and persists to disk
@@ -130,8 +178,13 @@ func (ps *PeerStore) Remove(name string) error {
 
 	for i, p := range ps.store.Peers {
 		if p.Name == name {
-			ps.store.Peers = append(ps.store.Peers[:i], ps.store.Peers[i+1:]...)
-			return ps.save()
+			updated := append([]Peer(nil), ps.store.Peers[:i]...)
+			updated = append(updated, ps.store.Peers[i+1:]...)
+			if err := ps.saveData(peerStoreData{Peers: updated}); err != nil {
+				return err
+			}
+			ps.store.Peers = updated
+			return nil
 		}
 	}
 	return fmt.Errorf("peer %q not found", name)
@@ -175,12 +228,74 @@ func (ps *PeerStore) List() []Peer {
 
 // save writes the peer store to disk (must be called with lock held)
 func (ps *PeerStore) save() error {
-	data, err := json.MarshalIndent(ps.store, "", "  ")
+	return ps.saveData(ps.store)
+}
+
+func (ps *PeerStore) saveData(store peerStoreData) error {
+	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal peers: %w", err)
 	}
-	if err := os.WriteFile(ps.path, data, 0600); err != nil {
-		return fmt.Errorf("write peers: %w", err)
+	dir := filepath.Dir(ps.path)
+	temp, err := os.CreateTemp(dir, ".peers-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary peers file: %w", err)
+	}
+	tempPath := temp.Name()
+	cleanup := func() {
+		temp.Close()
+		_ = os.Remove(tempPath)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		cleanup()
+		return fmt.Errorf("set temporary peers permissions: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("write temporary peers file: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temporary peers file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temporary peers file: %w", err)
+	}
+	if err := os.Rename(tempPath, ps.path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("replace peers file: %w", err)
 	}
 	return nil
+}
+
+// ValidateStoredPeers inspects the persisted Peer store without migrating or
+// rewriting it and returns the number of valid records.
+func ValidateStoredPeers() (int, error) {
+	dir, err := configDir()
+	if err != nil {
+		return 0, err
+	}
+	path := filepath.Join(dir, "peers.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read peers %s: %w", path, err)
+	}
+	var stored legacyPeerStoreData
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return 0, fmt.Errorf("parse peers %s: %w", path, err)
+	}
+	peers := make([]Peer, 0, len(stored.Peers))
+	for _, peer := range stored.Peers {
+		peers = append(peers, Peer{
+			Name: peer.Name, PublicKey: peer.PublicKey, PairedAt: peer.PairedAt,
+		})
+	}
+	if err := validatePeerRecords(peers); err != nil {
+		return 0, fmt.Errorf("validate peers %s: %w", path, err)
+	}
+	return len(peers), nil
 }

@@ -1,5 +1,19 @@
 # Agent Support Matrix
 
+## TmuxAtlas Hub/Agent runtime compatibility
+
+| Hub runtime | Agent runtime | State sync | Session actions | Remote PTY |
+|---|---|---|---|---|
+| v1 | v1 with negotiated capability | Yes | Yes | Yes |
+| v1 | v1 without optional capability | Yes | Explicit `capability-unsupported` | Explicit `capability-unsupported` |
+| v1 | legacy/no hello | No | No | No |
+| legacy | v1-only Agent | Unsupported mixed-version deployment | No | No |
+
+Upgrade the Hub first and all Agents immediately afterward. During that window,
+legacy Agents are deliberately offline. Use the Hub `/api/hosts` response to
+check build version, `runtime_protocol`, `generation`, and `capabilities`.
+Hub and Agents must be rolled back as a matching set.
+
 ## Support Tiers
 
 | Agent | Support Level | Detection | Waiting Detection | Latency |

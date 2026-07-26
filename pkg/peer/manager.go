@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,23 +23,20 @@ const (
 
 // HostState holds all known state for a single peer
 type HostState struct {
-	ID         string // public key fingerprint
-	Name       string
-	Version    string
-	PublicKey  string
-	Sessions   []*tmux.Session
-	Stats      map[string]interface{}
-	Activity   []*activity.Snapshot
-	ToolEvents []*toolevents.Event
-	Connected  bool
-	LastSeen   time.Time
-	Conn       *PeerConnection // nil for local host
-}
-
-// PeerConnection wraps a control WebSocket to a peer
-type PeerConnection struct {
-	HostID string
-	Send   chan *Message // messages queued for sending to this peer
+	ID            string // public key fingerprint
+	Name          string
+	Version       string
+	PublicKey     string
+	Sessions      []*tmux.Session
+	Stats         map[string]interface{}
+	Activity      []*activity.Snapshot
+	ToolEvents    []*toolevents.Event
+	Connected     bool
+	LastSeen      time.Time
+	Conn          *PeerConnection // nil for local host
+	Generation    uint64
+	Capabilities  []string
+	AgentInstance string
 }
 
 // Manager aggregates state from local tmux and remote peers
@@ -46,11 +44,12 @@ type Manager struct {
 	mu    sync.RWMutex
 	hosts map[string]*HostState // keyed by peer fingerprint
 
-	localID   string // this node's fingerprint
-	localName string
-	identity  *identity.Identity
-	peerStore *identity.PeerStore
-	localMgr  *state.Manager
+	localID     string // this node's fingerprint
+	localName   string
+	identity    *identity.Identity
+	peerStore   *identity.PeerStore
+	localMgr    *state.Manager
+	generations map[string]uint64
 
 	// Subscribers for state changes (browser WebSocket hub subscribes here)
 	subMu       sync.RWMutex
@@ -60,12 +59,13 @@ type Manager struct {
 // NewManager creates a new peer manager
 func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager) *Manager {
 	m := &Manager{
-		hosts:     make(map[string]*HostState),
-		localID:   id.Fingerprint(),
-		localName: id.Name,
-		identity:  id,
-		peerStore: peerStore,
-		localMgr:  localMgr,
+		hosts:       make(map[string]*HostState),
+		localID:     id.Fingerprint(),
+		localName:   id.Name,
+		identity:    id,
+		peerStore:   peerStore,
+		localMgr:    localMgr,
+		generations: make(map[string]uint64),
 	}
 
 	// Register local host
@@ -187,7 +187,16 @@ func (m *Manager) GetAllSessions() []*tmux.Session {
 
 // GetLocalSessions returns only this node's sessions
 func (m *Manager) GetLocalSessions() []*tmux.Session {
-	return m.localMgr.GetSessions()
+	if m.localMgr == nil {
+		return nil
+	}
+	sessions := m.localMgr.GetSessions()
+	for _, session := range sessions {
+		session.Host = m.localID
+		session.HostName = m.localName
+		session.HostOnline = true
+	}
+	return sessions
 }
 
 // GetHosts returns info about all known hosts
@@ -198,15 +207,11 @@ func (m *Manager) GetHosts() []HostInfo {
 	hosts := make([]HostInfo, 0, len(m.hosts))
 	for _, h := range m.hosts {
 		hosts = append(hosts, HostInfo{
-			ID:       h.ID,
-			Name:     h.Name,
-			Version:  h.Version,
-			Local:    h.ID == m.localID,
-			Online:   h.Connected,
-			Sessions: h.Sessions,
-			Activity: h.Activity,
-			Stats:    h.Stats,
-			LastSeen: h.LastSeen,
+			ID: h.ID, Name: h.Name, Version: h.Version,
+			RuntimeProtocol: RuntimeProtocolMax, Generation: h.Generation,
+			Capabilities: h.Capabilities, AgentInstance: h.AgentInstance,
+			Local: h.ID == m.localID, Online: h.Connected, Sessions: h.Sessions,
+			Activity: h.Activity, Stats: h.Stats, LastSeen: h.LastSeen,
 		})
 	}
 	return hosts
@@ -245,6 +250,116 @@ func (m *Manager) RegisterPeer(id, name, publicKey string, conn *PeerConnection)
 		"peer": name,
 		"id":   id,
 	}).Info("peer connected")
+}
+
+func (m *Manager) ReserveGeneration(id string) uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.generations[id]++
+	return m.generations[id]
+}
+
+// ActivatePeer atomically installs a negotiated generation. It returns false
+// if a newer generation won the race. Cancellation of the replaced connection
+// happens after the registry lock is released.
+func (m *Manager) ActivatePeer(id, name, publicKey string, conn *PeerConnection) bool {
+	m.mu.Lock()
+	return m.activatePeerLocked(id, name, publicKey, conn, false)
+}
+
+// ActivateAuthorizedPeer performs the final authorization check under the same
+// manager lock used by runtime revocation.
+func (m *Manager) ActivateAuthorizedPeer(id, name, publicKey string, conn *PeerConnection) bool {
+	m.mu.Lock()
+	return m.activatePeerLocked(id, name, publicKey, conn, true)
+}
+
+func (m *Manager) activatePeerLocked(id, name, publicKey string, conn *PeerConnection, requireAuthorization bool) bool {
+	if requireAuthorization && (m.peerStore == nil || m.peerStore.GetByPublicKey(publicKey) == nil) {
+		m.mu.Unlock()
+		return false
+	}
+	current := m.hosts[id]
+	if current != nil && current.Conn != nil && current.Generation >= conn.Generation {
+		m.mu.Unlock()
+		return false
+	}
+	var previous *PeerConnection
+	if current != nil {
+		previous = current.Conn
+	}
+	capabilities := make([]string, 0, len(conn.Capabilities))
+	for capability := range conn.Capabilities {
+		capabilities = append(capabilities, capability)
+	}
+	m.hosts[id] = &HostState{
+		ID: id, Name: name, PublicKey: publicKey, Connected: true,
+		LastSeen: time.Now(), Conn: conn, Generation: conn.Generation,
+		Capabilities: capabilities, AgentInstance: conn.AgentInstance,
+	}
+	m.mu.Unlock()
+
+	if previous != nil {
+		if previous.AgentInstance != "" && previous.AgentInstance != conn.AgentInstance {
+			previous.CloseWith(ErrorExecutionUnknown)
+		} else {
+			previous.Close()
+		}
+	}
+	conn.Start()
+	m.broadcast(state.StateEvent{Type: "peer-connected", Host: id, HostName: name})
+	return true
+}
+
+// RevokePeer atomically commits authorization removal before changing runtime
+// state. Network and goroutine cancellation occur after the registry lock.
+func (m *Manager) RevokePeer(name string) (identity.Peer, error) {
+	m.mu.Lock()
+	if m.peerStore == nil {
+		m.mu.Unlock()
+		return identity.Peer{}, fmt.Errorf("peer store unavailable")
+	}
+	authorized := m.peerStore.Get(name)
+	if authorized == nil {
+		m.mu.Unlock()
+		return identity.Peer{}, fmt.Errorf("peer %q not found", name)
+	}
+	if err := m.peerStore.Remove(name); err != nil {
+		m.mu.Unlock()
+		return identity.Peer{}, err
+	}
+	fingerprint := authorized.Fingerprint()
+	host := m.hosts[fingerprint]
+	delete(m.hosts, fingerprint)
+	var connection *PeerConnection
+	if host != nil {
+		connection = host.Conn
+	}
+	m.mu.Unlock()
+
+	if connection != nil {
+		connection.CloseWith(ErrorPeerRevoked)
+	}
+	m.broadcast(state.StateEvent{
+		Type: "peer-disconnected", Host: fingerprint, HostName: authorized.Name,
+	})
+	return *authorized, nil
+}
+
+func (m *Manager) UnregisterPeerGeneration(id string, generation uint64) bool {
+	m.mu.Lock()
+	host, ok := m.hosts[id]
+	if !ok || host.Generation != generation {
+		m.mu.Unlock()
+		return false
+	}
+	host.Connected = false
+	host.Conn = nil
+	host.LastSeen = time.Now()
+	name := host.Name
+	m.mu.Unlock()
+	m.broadcast(state.StateEvent{Type: "peer-disconnected", Host: id, HostName: name})
+	return true
 }
 
 // UnregisterPeer marks a peer as disconnected
@@ -331,6 +446,16 @@ func (m *Manager) GetPeerConnection(id string) *PeerConnection {
 	return nil
 }
 
+func (m *Manager) IsCurrent(connection *PeerConnection) bool {
+	if connection == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	host := m.hosts[connection.HostID]
+	return host != nil && host.Conn == connection && host.Generation == connection.Generation
+}
+
 // GetAllActivity returns activity snapshots from all remote peers (not local)
 func (m *Manager) GetAllActivity() []*activity.Snapshot {
 	m.mu.RLock()
@@ -366,7 +491,30 @@ func (m *Manager) HasHost(id string) bool {
 
 // IsLocal returns true if the given host ID is this node
 func (m *Manager) IsLocal(hostID string) bool {
-	return hostID == "" || hostID == m.localID
+	return hostID == m.localID
+}
+
+func (m *Manager) HasSession(hostID, session string) bool {
+	if hostID == m.localID && m.localMgr != nil {
+		for _, candidate := range m.localMgr.GetSessions() {
+			if candidate.Name == session {
+				return true
+			}
+		}
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	host := m.hosts[hostID]
+	if host == nil {
+		return false
+	}
+	for _, candidate := range host.Sessions {
+		if candidate.Name == session {
+			return true
+		}
+	}
+	return false
 }
 
 // pruneOffline removes peers that have been offline for too long

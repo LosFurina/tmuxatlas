@@ -90,6 +90,21 @@ func isLoopbackListen(address string) bool {
 	return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
 }
 
+func validateNoAuthMode(noAuth bool, listenAddress string, publicURL *url.URL) error {
+	if !noAuth {
+		return nil
+	}
+	if !isLoopbackListen(listenAddress) {
+		return fmt.Errorf("--no-auth requires a loopback --listen address")
+	}
+	host := publicURL.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("--no-auth requires a localhost or loopback --public-url; external gateways require Passkey authentication")
+	}
+	return nil
+}
+
 func Execute(ctx context.Context, c *cli.Command) error {
 	// Initialize tmux client
 	client, err := tmux.NewClient()
@@ -210,6 +225,9 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	if err := validateListenAddress(listenAddress); err != nil {
 		return err
 	}
+	if err := validateNoAuthMode(c.Bool("no-auth"), listenAddress, publicURL); err != nil {
+		return err
+	}
 
 	// Initialize Passkey-only authentication. The RP ID and allowed origin are
 	// derived from the externally reachable URL, not the internal listen address.
@@ -267,7 +285,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	ptyRelay := peer.NewPTYRelay()
 
 	// Initialize peer handler (accepts incoming peer connections)
-	peerHandler := peer.NewHandler(peerMgr, peerStore, tracker, pairingMgr, ptyRelay)
+	peerHandler := peer.NewHandler(peerMgr, peerStore, tracker, pairingMgr, ptyRelay, publicURL.String())
 
 	// If --hub is set, connect to the hub as a peer
 	hubURL := c.String("hub")
@@ -382,11 +400,15 @@ func init() {
 			if err := validateListenAddress(c.String("listen")); err != nil {
 				return ctx, err
 			}
-			if _, err := validatePublicURL(c.String("public-url")); err != nil {
+			publicURL, err := validatePublicURL(c.String("public-url"))
+			if err != nil {
+				return ctx, err
+			}
+			if err := validateNoAuthMode(c.Bool("no-auth"), c.String("listen"), publicURL); err != nil {
 				return ctx, err
 			}
 			logrus.Info("checking for tmux...")
-			_, err := tmux.NewClient()
+			_, err = tmux.NewClient()
 			if err != nil {
 				return ctx, err
 			}

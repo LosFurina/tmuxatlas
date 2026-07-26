@@ -3,7 +3,7 @@ import { useTerminal } from '../hooks/useTerminal'
 
 interface TerminalProps {
   sessionName: string
-  hostId?: string
+  hostId: string
   fullscreen?: boolean
   onToggleFullscreen?: () => void
 }
@@ -19,7 +19,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
       setTimeout(() => focus(), 100)
     }
     return () => disconnect()
-  }, [sessionName])
+  }, [sessionName, hostId])
 
   // Refocus terminal when WebSocket reconnects (e.g. after iPad sleep)
   useEffect(() => {

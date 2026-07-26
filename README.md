@@ -49,7 +49,7 @@ systemd/launchd user service; Agent installation also completes pairing.
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.6.0 \
+TMUXATLAS_VERSION=v0.7.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -316,10 +316,13 @@ process environment variables take precedence. Start from
 | `TMUXATLAS_SOCKET` | auto | Unix socket path for local CLI |
 | `TMUXATLAS_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
 | `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
-| `TMUXATLAS_URL` | `http://localhost:7654` | Server URL for notify/agent-setup |
+| `TMUXATLAS_SOCKET` | platform default | Private Unix socket used by notify/agent-setup |
 | `TMUXATLAS_NO_AUTH` | `false` | Disable authentication |
 | `TMUXATLAS_HUB` | | Hub URL for peer mode; use the gateway's trusted HTTPS URL |
 | `TMUXATLAS_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
+| `TMUXATLAS_PEER_OUTCOME_TTL` | `5m` | Agent-side correlated action result retention |
+| `TMUXATLAS_PEER_OUTCOME_MAX_ENTRIES` | `1024` | Maximum retained/in-flight correlated Agent actions |
+| `TMUXATLAS_PEER_OUTCOME_MAX_BYTES` | `65536` | Maximum serialized result/error bytes per action |
 
 ### CLI flags
 
@@ -331,7 +334,7 @@ tmuxatlas server [flags]
       --discovery-interval int    Session discovery interval in seconds (default 2)
       --no-control-mode           Disable tmux control mode (use polling only)
       --socket string             Unix socket path (auto-detected if omitted)
-      --no-auth                   Disable authentication (not recommended for remote access)
+      --no-auth                   Disable authentication (loopback development only)
       --hub string                Trusted hub URL for peer mode (e.g. https://tmuxatlas.example.com)
       --local-only                Only show local sessions in the web UI
 ```

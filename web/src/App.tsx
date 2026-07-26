@@ -22,6 +22,7 @@ import { usePreferencesProvider, usePreferences, PreferencesContext } from './ho
 import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
 import { getBrandStorage, setBrandStorage } from './lib/brandStorage'
+import { postRuntimeMutation } from './lib/runtimeApi'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
@@ -32,16 +33,12 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/setup') {
     return { view: 'setup', sessionKey: null }
   }
-  // /session/<host>/<name> or /session/<name> (backward compat)
+  // Every session URL carries its immutable host identity.
   const hostMatch = window.location.pathname.match(/^\/session\/([^/]+)\/(.+)$/)
   if (hostMatch) {
     const host = decodeURIComponent(hostMatch[1])
     const name = decodeURIComponent(hostMatch[2])
     return { view: 'session', sessionKey: `${host}/${name}` }
-  }
-  const match = window.location.pathname.match(/^\/session\/(.+)$/)
-  if (match) {
-    return { view: 'session', sessionKey: decodeURIComponent(match[1]) }
   }
   return { view: 'overview', sessionKey: null }
 }
@@ -67,6 +64,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   })
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
   const { prefs } = usePreferences()
 
@@ -139,11 +137,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
       path = '/setup'
     } else if (sessKey) {
       const { host, name } = parseSessionKey(sessKey)
-      if (host) {
-        path = `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
-      } else {
-        path = `/session/${encodeURIComponent(name)}`
-      }
+      path = `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`
     } else {
       path = '/'
     }
@@ -221,11 +215,9 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
         navigateTo(sessKey, 'session')
         if (next.window !== undefined) {
           const { host, name } = parseSessionKey(sessKey)
-          fetch('/api/session/select-window', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ host: host || undefined, session: name, window: next.window, pane: next.pane || undefined }),
-          }).catch(() => {})
+          postRuntimeMutation('/api/session/select-window', {
+            host_id: host, session: name, window: next.window, pane: next.pane || undefined,
+          }).catch(err => setRuntimeError(err instanceof Error ? err.message : 'The session action failed.'))
         }
         return
       }
@@ -289,13 +281,12 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     if (windowIndex !== undefined) {
       const { host, name } = parseSessionKey(sessKey)
       try {
-        await fetch('/api/session/select-window', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host: host || undefined, session: name, window: windowIndex, pane: pane || undefined }),
+        await postRuntimeMutation('/api/session/select-window', {
+          host_id: host, session: name, window: windowIndex, pane: pane || undefined,
         })
       } catch (err) {
         console.error('Failed to select window:', err)
+        setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
       }
     }
     setTimeout(() => refocusTerminal(), 200)
@@ -316,13 +307,12 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     if (windowIndex !== undefined) {
       const { host, name } = parseSessionKey(sessKey)
       try {
-        await fetch('/api/session/select-window', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host: host || undefined, session: name, window: windowIndex }),
+        await postRuntimeMutation('/api/session/select-window', {
+          host_id: host, session: name, window: windowIndex,
         })
       } catch (err) {
         console.error('Failed to select window:', err)
+        setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
       }
     }
     // Refocus after navigation and window switch settle
@@ -334,24 +324,21 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     setNewSessionModalOpen(true)
   }, [])
 
-  const handleCreateSession = useCallback(async (name: string, hostId?: string) => {
+  const handleCreateSession = useCallback(async (name: string, hostId: string) => {
     setNewSessionModalOpen(false)
     try {
-      const res = await fetch('/api/session/new', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, host: hostId || undefined }),
+      await postRuntimeMutation('/api/session/new', {
+        host_id: hostId, session: name,
       })
-      if (res.ok) {
-        const sessKey = hostId ? `${hostId}/${name}` : name
-        pendingSessionRef.current = sessKey
-        navigateTo(sessKey)
-        await refresh()
-        pendingSessionRef.current = null
-        setTimeout(() => refocusTerminal(), 300)
-      }
+      const sessKey = `${hostId}/${name}`
+      pendingSessionRef.current = sessKey
+      navigateTo(sessKey)
+      await refresh()
+      pendingSessionRef.current = null
+      setTimeout(() => refocusTerminal(), 300)
     } catch (err) {
       console.error('Failed to create session:', err)
+      setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
       pendingSessionRef.current = null
     }
   }, [navigateTo, refresh, refocusTerminal])
@@ -390,6 +377,15 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   return (
     <div className="flex flex-col h-dvh w-screen bg-background text-foreground relative">
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {runtimeError && (
+        <button
+          type="button"
+          onClick={() => setRuntimeError(null)}
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-[10000] max-w-[90vw] rounded border border-destructive/50 bg-destructive/15 px-4 py-2 text-sm text-foreground shadow-lg"
+        >
+          {runtimeError}
+        </button>
+      )}
       {quickSwitcherOpen && (
         <QuickSwitcher
           sessions={sessions}
@@ -434,8 +430,17 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
             hasMultipleHosts={hasMultipleHosts}
             onSessionSelect={handleSessionSelect}
             onSessionRenamed={(oldKey, newKey) => {
-              if (selectedSession === oldKey) navigateTo(newKey)
+              if (selectedSession === oldKey) {
+                pendingSessionRef.current = newKey
+                navigateTo(newKey)
+                refresh().finally(() => {
+                  pendingSessionRef.current = null
+                })
+              } else {
+                void refresh()
+              }
             }}
+            onRuntimeError={setRuntimeError}
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
             getSessionActivity={getSessionActivity}
@@ -456,7 +461,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
               <Terminal
                 sessionName={parseSessionKey(selectedSession).name}
-                hostId={parseSessionKey(selectedSession).host || undefined}
+                hostId={parseSessionKey(selectedSession).host}
                 fullscreen={terminalFullscreen}
                 onToggleFullscreen={toggleFullscreen}
               />

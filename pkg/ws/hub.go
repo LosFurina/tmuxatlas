@@ -220,6 +220,11 @@ func (h *Hub) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		logrus.WithError(err).Warn("ws upgrade failed")
 		return
 	}
+	conn.SetReadLimit(64 << 10)
+	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	})
 
 	c := &client{conn: conn}
 
@@ -238,6 +243,23 @@ func (h *Hub) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	logrus.Debug("state ws client connected")
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					conn.Close()
+					return
+				}
+			case <-stopPing:
+				return
+			}
+		}
+	}()
 
 	// Keep connection alive by reading (and discarding) client messages
 	for {

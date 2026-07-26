@@ -7,7 +7,7 @@ import {
   type CDPSession,
   type Page,
 } from '@playwright/test'
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -21,6 +21,7 @@ let context: BrowserContext
 let page: Page
 let cdp: CDPSession
 let authenticatorId: string
+let socketPath: string
 
 async function waitForServer() {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -37,11 +38,13 @@ async function waitForServer() {
 
 test.beforeAll(async () => {
   testHome = await mkdtemp(join(tmpdir(), 'tmuxatlas-e2e-'))
+  socketPath = join(testHome, 'tmuxatlas.sock')
   const binary = resolve(process.cwd(), '..', 'dist', 'tmuxatlas')
   server = spawn(binary, [
     'server',
     '--listen', '127.0.0.1:17654',
     '--public-url', baseURL,
+    '--socket', socketPath,
     '--discovery-interval', '60',
   ], {
     env: { ...process.env, HOME: testHome, TMUXATLAS_SESSION_TTL: '1h' },
@@ -59,6 +62,24 @@ test.beforeAll(async () => {
     await new Promise((resolveWait) => setTimeout(resolveWait, 100))
   }
   if (!setupToken) throw new Error(`Setup token was not found in server logs:\n${logs}`)
+
+  const initialToken = setupToken
+  setupToken = await new Promise<string>((resolveToken, rejectToken) => {
+    execFile(binary, ['bootstrap-token', '--socket', socketPath], {
+      env: { ...process.env, HOME: testHome },
+    }, (error, stdout) => {
+      if (error) rejectToken(error)
+      else resolveToken(stdout.trim())
+    })
+  })
+  const replay = await fetch(`${baseURL}/api/auth/passkey/register/begin`, {
+    method: 'POST',
+    headers: { Origin: baseURL, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ setup_token: initialToken, label: 'stale' }),
+  })
+  if (replay.status !== 401) {
+    throw new Error(`Rotated bootstrap token replay returned ${replay.status}, want 401`)
+  }
 
   browser = await chromium.launch({ channel: process.env.CI ? 'chromium' : 'chrome' })
   context = await browser.newContext()
@@ -85,7 +106,7 @@ test.afterAll(async () => {
   await rm(testHome, { recursive: true, force: true })
 })
 
-test('complete Passkey lifecycle', async () => {
+test('complete Passkey lifecycle and browser mutation protections', async ({ request }) => {
   await page.goto(baseURL)
   await page.getByPlaceholder('One-time setup token from server logs').fill(setupToken)
   await page.getByPlaceholder('Passkey label (optional)').fill('Primary')
@@ -96,6 +117,35 @@ test('complete Passkey lifecycle', async () => {
   await page.getByRole('button', { name: 'Continue to Dashboard' }).click()
 
   await page.getByTitle('Settings').click()
+
+  const authCheck = await page.evaluate(async () => fetch('/api/auth/check').then((response) => response.json()))
+  expect(authCheck.csrf_token).toBeTruthy()
+  const cookies = await context.cookies(baseURL)
+  const cookieHeader = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+  const preferences = await request.get(`${baseURL}/api/preferences`, {
+    headers: { Cookie: cookieHeader },
+  }).then((response) => response.json())
+  const mutationHeaders = {
+    Cookie: cookieHeader,
+    'X-TmuxAtlas-CSRF': authCheck.csrf_token,
+  }
+  expect((await request.put(`${baseURL}/api/preferences`, {
+    headers: { ...mutationHeaders, Origin: 'http://admin.localhost:17654' },
+    data: preferences,
+  })).status()).toBe(403)
+  expect((await request.put(`${baseURL}/api/preferences`, {
+    headers: mutationHeaders,
+    data: preferences,
+  })).status()).toBe(403)
+  expect((await request.put(`${baseURL}/api/preferences`, {
+    headers: { ...mutationHeaders, Origin: baseURL, 'Content-Type': 'text/plain' },
+    data: JSON.stringify(preferences),
+  })).status()).toBe(415)
+  expect((await request.put(`${baseURL}/api/preferences`, {
+    headers: { ...mutationHeaders, Origin: baseURL },
+    data: preferences,
+  })).status()).toBe(200)
+
   await expect(page.getByText('Primary', { exact: true })).toBeVisible()
   const registeredCredentials = await cdp.send('WebAuthn.getCredentials', { authenticatorId })
   expect(registeredCredentials.credentials).toHaveLength(1)

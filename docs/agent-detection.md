@@ -86,7 +86,7 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 
 ### Hook-Based Detection
 
-Agents call `tmuxatlas notify` which sends an event to the server via unix socket (preferred) or HTTP fallback. The notify command auto-detects the tmux session, window, and pane from the `TMUX_PANE` environment variable.
+Agents call `tmuxatlas notify` which sends an event only through the current user's private Unix socket. The notify command auto-detects the tmux session, window, and pane from the `TMUX_PANE` environment variable.
 
 Event delivery path:
 ```

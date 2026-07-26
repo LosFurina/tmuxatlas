@@ -28,6 +28,8 @@ import (
 const ceremonyCookieName = "tmuxatlas_webauthn"
 
 const maxPasskeyLabelRunes = 80
+const maxCeremonies = 64
+const bootstrapTTL = 10 * time.Minute
 
 var (
 	ErrPasskeyNotFound     = errors.New("passkey not found")
@@ -283,23 +285,25 @@ func (u passkeyUser) WebAuthnDisplayName() string                { return "TmuxA
 func (u passkeyUser) WebAuthnCredentials() []webauthn.Credential { return u.credentials }
 
 type ceremony struct {
-	kind    string
-	label   string
-	session *webauthn.SessionData
-	expires time.Time
+	kind      string
+	label     string
+	session   *webauthn.SessionData
+	expires   time.Time
+	bootstrap bool
 }
 
 type PasskeyManager struct {
-	mu            sync.Mutex
-	webAuthn      *webauthn.WebAuthn
-	store         *PasskeyStore
-	sessions      *SessionManager
-	ceremonies    map[string]ceremony
-	bootstrapHash []byte
-	bootstrap     string
-	secureCookies bool
-	rpID          string
-	origin        string
+	mu               sync.Mutex
+	webAuthn         *webauthn.WebAuthn
+	store            *PasskeyStore
+	sessions         *SessionManager
+	ceremonies       map[string]ceremony
+	bootstrapHash    []byte
+	bootstrap        string
+	bootstrapExpires time.Time
+	secureCookies    bool
+	rpID             string
+	origin           string
 }
 
 func NewPasskeyManager(publicURL string, sessions *SessionManager) (*PasskeyManager, error) {
@@ -326,8 +330,9 @@ func NewPasskeyManager(publicURL string, sessions *SessionManager) (*PasskeyMana
 		rpID: u.Hostname(), origin: origin,
 	}
 	if !store.HasCredentials() {
-		m.bootstrap = base64.RawURLEncoding.EncodeToString(randomBytes(24))
+		m.bootstrap = base64.RawURLEncoding.EncodeToString(randomBytes(32))
 		m.bootstrapHash = bootstrapDigest(m.bootstrap)
+		m.bootstrapExpires = time.Now().Add(bootstrapTTL)
 	}
 	return m, nil
 }
@@ -337,10 +342,29 @@ func bootstrapDigest(value string) []byte {
 	return digest[:]
 }
 
-func (m *PasskeyManager) BootstrapToken() string { return m.bootstrap }
-func (m *PasskeyManager) HasCredentials() bool   { return m.store.HasCredentials() }
-func (m *PasskeyManager) RPID() string           { return m.rpID }
-func (m *PasskeyManager) Origin() string         { return m.origin }
+func (m *PasskeyManager) BootstrapToken() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	token := m.bootstrap
+	m.bootstrap = ""
+	return token
+}
+
+func (m *PasskeyManager) RotateBootstrapToken() (string, error) {
+	if m.store.HasCredentials() {
+		return "", errors.New("bootstrap rotation is unavailable after a passkey is registered")
+	}
+	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
+	m.mu.Lock()
+	m.bootstrap = ""
+	m.bootstrapHash = bootstrapDigest(token)
+	m.bootstrapExpires = time.Now().Add(bootstrapTTL)
+	m.mu.Unlock()
+	return token, nil
+}
+func (m *PasskeyManager) HasCredentials() bool { return m.store.HasCredentials() }
+func (m *PasskeyManager) RPID() string         { return m.rpID }
+func (m *PasskeyManager) Origin() string       { return m.origin }
 
 func (m *PasskeyManager) authenticated(r *http.Request) bool {
 	cookie, err := r.Cookie(cookieName)
@@ -354,12 +378,12 @@ func (m *PasskeyManager) authorizeRegistration(r *http.Request, supplied string)
 	got := bootstrapDigest(supplied)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.bootstrapHash) == 0 || subtle.ConstantTimeCompare(got, m.bootstrapHash) != 1 {
+	if len(m.bootstrapHash) == 0 || time.Now().After(m.bootstrapExpires) ||
+		subtle.ConstantTimeCompare(got, m.bootstrapHash) != 1 {
 		return false
 	}
-	// Consume the bootstrap token when the ceremony starts. If the browser
-	// cancels, restarting the server emits a fresh token.
-	m.bootstrap = ""
+	// Bind the token to the one registration ceremony. It cannot be replayed
+	// after success, failure, cancellation, or timeout.
 	m.bootstrapHash = nil
 	return true
 }
@@ -372,6 +396,10 @@ func (m *PasskeyManager) putCeremony(w http.ResponseWriter, value ceremony) erro
 		if time.Now().After(existing.expires) {
 			delete(m.ceremonies, key)
 		}
+	}
+	if len(m.ceremonies) >= maxCeremonies {
+		m.mu.Unlock()
+		return errors.New("too many passkey ceremonies")
 	}
 	m.ceremonies[token] = value
 	m.mu.Unlock()
@@ -425,7 +453,10 @@ func (m *PasskeyManager) BeginRegistrationHandler() http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "could not begin passkey registration")
 			return
 		}
-		_ = m.putCeremony(w, ceremony{kind: "register", label: req.Label, session: session})
+		if err := m.putCeremony(w, ceremony{kind: "register", label: req.Label, session: session}); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "passkey ceremony capacity reached")
+			return
+		}
 		writeJSON(w, http.StatusOK, options)
 	}
 }
@@ -484,6 +515,7 @@ func (m *PasskeyManager) FinishRegistrationHandler() http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		hadCredentials := m.store.HasCredentials()
 		credential, err := m.webAuthn.FinishRegistration(m.store.snapshot(), *value.session, r)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "passkey verification failed")
@@ -493,9 +525,16 @@ func (m *PasskeyManager) FinishRegistrationHandler() http.HandlerFunc {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		if err := setSessionCookie(w, m.sessions, m.secureCookies); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not create session")
-			return
+		m.mu.Lock()
+		m.bootstrap = ""
+		m.bootstrapHash = nil
+		m.bootstrapExpires = time.Time{}
+		m.mu.Unlock()
+		if !hadCredentials {
+			if err := setSessionCookie(w, m.sessions, m.secureCookies); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not create session")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
@@ -515,7 +554,10 @@ func (m *PasskeyManager) BeginLoginHandler() http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "could not begin passkey login")
 			return
 		}
-		_ = m.putCeremony(w, ceremony{kind: "login", session: session})
+		if err := m.putCeremony(w, ceremony{kind: "login", session: session}); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "passkey ceremony capacity reached")
+			return
+		}
 		writeJSON(w, http.StatusOK, options)
 	}
 }

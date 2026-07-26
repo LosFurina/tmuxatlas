@@ -2,10 +2,14 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,12 +17,17 @@ import (
 // SessionManager manages in-memory session tokens with expiry.
 type SessionManager struct {
 	mu       sync.RWMutex
-	sessions map[string]time.Time
+	sessions map[string]session
 	ttl      time.Duration
 }
 
+type session struct {
+	expiry time.Time
+	csrf   string
+}
+
 func NewSessionManager(ttl time.Duration) *SessionManager {
-	return &SessionManager{sessions: make(map[string]time.Time), ttl: ttl}
+	return &SessionManager{sessions: make(map[string]session), ttl: ttl}
 }
 
 func (sm *SessionManager) TTL() time.Duration {
@@ -31,8 +40,12 @@ func (sm *SessionManager) Create() (string, error) {
 		return "", err
 	}
 	token := hex.EncodeToString(b)
+	csrfBytes := make([]byte, 32)
+	if _, err := rand.Read(csrfBytes); err != nil {
+		return "", err
+	}
 	sm.mu.Lock()
-	sm.sessions[token] = time.Now().Add(sm.ttl)
+	sm.sessions[token] = session{expiry: time.Now().Add(sm.ttl), csrf: hex.EncodeToString(csrfBytes)}
 	sm.mu.Unlock()
 	return token, nil
 }
@@ -40,13 +53,24 @@ func (sm *SessionManager) Create() (string, error) {
 func (sm *SessionManager) Validate(token string) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	expiry, ok := sm.sessions[token]
-	if !ok || time.Now().After(expiry) {
+	value, ok := sm.sessions[token]
+	if !ok || time.Now().After(value.expiry) {
 		delete(sm.sessions, token)
 		return false
 	}
-	sm.sessions[token] = time.Now().Add(sm.ttl)
+	value.expiry = time.Now().Add(sm.ttl)
+	sm.sessions[token] = value
 	return true
+}
+
+func (sm *SessionManager) CSRF(token string) (string, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	value, ok := sm.sessions[token]
+	if !ok || time.Now().After(value.expiry) {
+		return "", false
+	}
+	return value.csrf, true
 }
 
 func (sm *SessionManager) Revoke(token string) {
@@ -59,8 +83,8 @@ func (sm *SessionManager) Cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	now := time.Now()
-	for token, expiry := range sm.sessions {
-		if now.After(expiry) {
+	for token, value := range sm.sessions {
+		if now.After(value.expiry) {
 			delete(sm.sessions, token)
 		}
 	}
@@ -95,6 +119,69 @@ func Middleware(sm *SessionManager, secureCookies bool) func(http.Handler) http.
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+const CSRFHeader = "X-TmuxAtlas-CSRF"
+
+// CSRFMiddleware protects cookie-authenticated browser mutations. It must run
+// after Middleware so that the active session has already been validated.
+func CSRFMiddleware(sm *SessionManager) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cookie, err := r.Cookie(cookieName)
+			if err != nil {
+				writeError(w, http.StatusForbidden, "csrf validation failed")
+				return
+			}
+			expected, ok := sm.CSRF(cookie.Value)
+			provided := r.Header.Get(CSRFHeader)
+			if !ok || len(provided) != len(expected) ||
+				subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+				writeError(w, http.StatusForbidden, "csrf validation failed")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func OriginMiddleware(publicURL string) (func(http.Handler) http.Handler, error) {
+	expected, err := normalizedOrigin(publicURL)
+	if err != nil {
+		return nil, err
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin, err := normalizedOrigin(r.Header.Get("Origin"))
+			if err != nil || origin != expected {
+				writeError(w, http.StatusForbidden, "origin validation failed")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}, nil
+}
+
+func normalizedOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil ||
+		u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("invalid origin")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", errors.New("invalid origin scheme")
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), nil
 }
 
 func refreshSessionCookie(w http.ResponseWriter, token string, ttl time.Duration, secure bool) {
@@ -138,7 +225,8 @@ func CheckHandler(sm *SessionManager, secureCookies bool) http.HandlerFunc {
 			return
 		}
 		refreshSessionCookie(w, cookie.Value, sm.TTL(), secureCookies)
+		csrf, _ := sm.CSRF(cookie.Value)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"authenticated":true}`)
+		fmt.Fprintf(w, `{"authenticated":true,"csrf_token":%q}`, csrf)
 	}
 }

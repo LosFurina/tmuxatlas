@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -24,7 +23,9 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
 	"github.com/LosFurina/tmuxatlas/pkg/auth"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/httpguard"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/ingress"
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/preferences"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
@@ -59,6 +60,34 @@ type Options struct {
 	LocalOnly       bool
 }
 
+func writeRuntimeError(w http.ResponseWriter, err error) {
+	var runtimeError peer.RuntimeError
+	if !errors.As(err, &runtimeError) {
+		runtimeError = peer.RuntimeError{Code: peer.ErrorExecutionFailed}
+	}
+	status := http.StatusInternalServerError
+	switch runtimeError.Code {
+	case peer.ErrorInvalidTarget:
+		status = http.StatusBadRequest
+	case peer.ErrorNotFound:
+		status = http.StatusNotFound
+	case peer.ErrorPeerOffline, peer.ErrorPeerRevoked:
+		status = http.StatusServiceUnavailable
+	case peer.ErrorProtocolIncompatible, peer.ErrorCapabilityUnsupported,
+		peer.ErrorRequestConflict, peer.ErrorExecutionUnknown:
+		status = http.StatusConflict
+	case peer.ErrorQueueFull, peer.ErrorResourceExhausted:
+		status = http.StatusTooManyRequests
+	case peer.ErrorTimeout:
+		status = http.StatusGatewayTimeout
+	case peer.ErrorStaleGeneration:
+		status = http.StatusConflict
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(runtimeError)
+}
+
 // handleRemoteSession handles a terminal session request for a remote peer.
 // It tells the peer to spawn a PTY, then bridges the browser WS to the peer's PTY WS.
 func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, hostID string) {
@@ -87,6 +116,15 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 		http.Error(w, "peer not connected", http.StatusBadGateway)
 		return
 	}
+	target := peer.SessionTarget{HostID: hostID, Session: sessionName}
+	if err := target.Validate(); err != nil || !opts.PeerMgr.HasSession(hostID, sessionName) {
+		http.Error(w, "invalid or unknown session target", http.StatusNotFound)
+		return
+	}
+	if !peerConn.Supports(peer.CapabilityPTYControl) {
+		http.Error(w, "peer does not support PTY control", http.StatusConflict)
+		return
+	}
 
 	// Upgrade browser to WebSocket
 	upgrader := websocket.Upgrader{
@@ -100,32 +138,28 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 	defer browserWS.Close()
 
 	// Generate stream ID and register pending relay
-	streamID := peer.GenerateStreamID()
-	pending := opts.PTYRelay.RegisterPending(streamID, hostID, browserWS)
-	defer opts.PTYRelay.Remove(streamID)
+	owner, err := opts.PTYRelay.RegisterPending(peerConn, target, browserWS)
+	if err != nil {
+		return
+	}
+	defer owner.Teardown("browser-handler-exit")
 
 	// Tell the peer to open a PTY
 	msg, _ := peer.NewMessage(peer.MsgPTYOpen, peer.PTYOpenPayload{
-		StreamID: streamID,
-		Session:  sessionName,
-		Cols:     cols,
-		Rows:     rows,
+		StreamID: owner.StreamID, AttachToken: owner.AttachToken,
+		Generation: peerConn.Generation, Target: target, Cols: cols, Rows: rows,
 	})
-	select {
-	case peerConn.Send <- msg:
-	default:
+	if err := peerConn.Send(r.Context(), msg); err != nil {
 		return
 	}
 
 	// Wait for the peer to connect its PTY WebSocket
 	select {
-	case peerWS := <-pending.Ready:
-		if peerWS == nil {
-			return
-		}
-		// Bridge the two WebSocket connections
-		peer.Bridge(browserWS, peerWS, streamID)
+	case <-owner.Ready():
+		owner.Bridge()
 	case <-time.After(15 * time.Second):
+		return
+	case <-peerConn.Done():
 		return
 	}
 }
@@ -133,21 +167,54 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 func Run(ctx context.Context, opts *Options) error {
 	logger := logrus.WithField("component", "server")
 
-	r := chi.NewRouter()
-	r.Use(chimiddleware.Recoverer)
-	r.Use(chimiddleware.StripSlashes)
-	r.Use(chimiddleware.RequestID)
+	publicURL := opts.PublicURL
+	if publicURL == "" {
+		publicURL = "http://localhost:7654"
+	}
+	originMiddleware, err := auth.OriginMiddleware(publicURL)
+	if err != nil {
+		return fmt.Errorf("public URL origin: %w", err)
+	}
+	hostValidation, err := hostMiddleware(publicURL)
+	if err != nil {
+		return fmt.Errorf("public URL host: %w", err)
+	}
+	ingressPolicy, err := ingress.NewPolicy(ingress.DefaultConfig(), nil)
+	if err != nil {
+		return fmt.Errorf("ingress policy: %w", err)
+	}
+	var actionRouter *peer.ActionRouter
+	if opts.PeerMgr != nil && opts.Client != nil {
+		actionRouter = peer.NewActionRouter(opts.PeerMgr, peer.NewTmuxRuntimeExecutor(opts.Client), 10*time.Second)
+	}
+
+	publicRouter := chi.NewRouter()
+	publicRouter.Use(chimiddleware.Recoverer)
+	publicRouter.Use(chimiddleware.StripSlashes)
+	publicRouter.Use(chimiddleware.RequestID)
+	publicRouter.Use(hostValidation)
+	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
 
 	// API routes
-	r.Route("/api", func(r chi.Router) {
+	publicRouter.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
 		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
 		if opts.AuthEnabled {
-			r.Post("/auth/passkey/register/begin", opts.PasskeyManager.BeginRegistrationHandler())
-			r.Post("/auth/passkey/register/finish", opts.PasskeyManager.FinishRegistrationHandler())
-			r.Post("/auth/passkey/login/begin", opts.PasskeyManager.BeginLoginHandler())
-			r.Post("/auth/passkey/login/finish", opts.PasskeyManager.FinishLoginHandler())
-			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr, opts.SecureCookies))
+			preSessionJSON := []func(http.Handler) http.Handler{
+				admissionMiddleware(ingressPolicy, ingress.CategoryWebAuthn),
+				originMiddleware,
+				httpguard.BodyReadDeadline(15 * time.Second),
+				httpguard.JSONBody(httpguard.WebAuthnLimit),
+			}
+			r.With(preSessionJSON...).Post("/auth/passkey/register/begin", opts.PasskeyManager.BeginRegistrationHandler())
+			r.With(preSessionJSON...).Post("/auth/passkey/register/finish", opts.PasskeyManager.FinishRegistrationHandler())
+			r.With(preSessionJSON...).Post("/auth/passkey/login/begin", opts.PasskeyManager.BeginLoginHandler())
+			r.With(preSessionJSON...).Post("/auth/passkey/login/finish", opts.PasskeyManager.FinishLoginHandler())
+			r.With(
+				auth.Middleware(opts.SessionMgr, opts.SecureCookies),
+				originMiddleware,
+				auth.CSRFMiddleware(opts.SessionMgr),
+			).Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr, opts.SecureCookies))
 			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr, opts.SecureCookies))
 		}
 
@@ -160,58 +227,18 @@ func Run(ctx context.Context, opts *Options) error {
 			})
 		})
 
-		// Tool event ingest — no auth required (used by local CLI via unix socket)
-		r.Post("/tool-event", func(w http.ResponseWriter, r *http.Request) {
-			body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
-			if err != nil {
-				http.Error(w, "bad request", http.StatusBadRequest)
-				return
-			}
-
-			logrus.WithField("raw_body", string(body)).Trace("tool-event API: received request")
-
-			var evt toolevents.Event
-			if err := json.Unmarshal(body, &evt); err != nil {
-				logrus.WithError(err).WithField("raw_body", string(body)).Trace("tool-event API: JSON parse failed")
-				http.Error(w, "invalid JSON", http.StatusBadRequest)
-				return
-			}
-
-			if evt.Tool == "" || evt.Status == "" || evt.Session == "" {
-				logrus.WithFields(logrus.Fields{
-					"tool": evt.Tool, "status": evt.Status, "session": evt.Session,
-				}).Trace("tool-event API: missing required fields")
-				http.Error(w, "tool, status, and session are required", http.StatusBadRequest)
-				return
-			}
-
-			// Stamp local host identity when running in multi-host mode
-			if opts.PeerMgr != nil && evt.Host == "" {
-				evt.Host = opts.PeerMgr.LocalID()
-				evt.HostName = opts.PeerMgr.LocalName()
-			}
-
-			logrus.WithFields(logrus.Fields{
-				"tool":    evt.Tool,
-				"status":  evt.Status,
-				"session": evt.Session,
-				"window":  evt.Window,
-				"pane":    evt.Pane,
-				"message": evt.Message,
-				"host":    evt.Host,
-			}).Debug("received tool event via API")
-
-			opts.Tracker.Record(&evt)
-			w.WriteHeader(http.StatusNoContent)
-		})
-
 		// Protected API routes
 		r.Group(func(r chi.Router) {
+			mutations := r
 			if opts.AuthEnabled {
 				r.Use(auth.Middleware(opts.SessionMgr, opts.SecureCookies))
 				r.Get("/auth/passkeys", opts.PasskeyManager.ListHandler())
-				r.Patch("/auth/passkeys/{credentialID}", opts.PasskeyManager.RenameHandler())
-				r.Delete("/auth/passkeys/{credentialID}", opts.PasskeyManager.DeleteHandler())
+				mutations = r.With(originMiddleware, auth.CSRFMiddleware(opts.SessionMgr))
+				mutations.With(
+					httpguard.BodyReadDeadline(10*time.Second),
+					httpguard.JSONBody(httpguard.SmallJSONLimit),
+				).Patch("/auth/passkeys/{credentialID}", opts.PasskeyManager.RenameHandler())
+				mutations.Delete("/auth/passkeys/{credentialID}", opts.PasskeyManager.DeleteHandler())
 			}
 
 			// Agent status — check which agents are installed/configured
@@ -222,8 +249,12 @@ func Run(ctx context.Context, opts *Options) error {
 
 			r.Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
 				var sessions []*tmux.Session
-				if opts.PeerMgr != nil && !opts.LocalOnly {
-					sessions = opts.PeerMgr.GetAllSessions()
+				if opts.PeerMgr != nil {
+					if opts.LocalOnly {
+						sessions = opts.PeerMgr.GetLocalSessions()
+					} else {
+						sessions = opts.PeerMgr.GetAllSessions()
+					}
 				} else {
 					sessions = opts.StateMgr.GetSessions()
 				}
@@ -241,115 +272,20 @@ func Run(ctx context.Context, opts *Options) error {
 				}
 			})
 
-			r.Post("/session/new", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Name string `json:"name"`
-					Host string `json:"host,omitempty"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-					http.Error(w, "name is required", http.StatusBadRequest)
-					return
-				}
-
-				// Remote host — forward via peer connection
-				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
-					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
-					if peerConn == nil {
-						http.Error(w, "peer not connected", http.StatusBadGateway)
-						return
-					}
-					params, _ := json.Marshal(map[string]string{"name": req.Name})
-					msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-						Action: "new",
-						Params: params,
-					})
-					select {
-					case peerConn.Send <- msg:
-						w.WriteHeader(http.StatusNoContent)
-					default:
-						http.Error(w, "peer send queue full", http.StatusBadGateway)
-					}
-					return
-				}
-
-				if err := opts.Client.NewSession(req.Name); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				// Trigger state refresh so WebSocket clients get notified
-				if fresh, err := opts.Client.ListSessions(); err == nil {
-					opts.StateMgr.UpdateSessions(fresh)
-				}
-				w.WriteHeader(http.StatusNoContent)
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/new", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionNew(w, r, actionRouter, opts)
 			})
 
-			r.Post("/session/rename", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					OldName string `json:"old_name"`
-					NewName string `json:"new_name"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OldName == "" || req.NewName == "" {
-					http.Error(w, "old_name and new_name are required", http.StatusBadRequest)
-					return
-				}
-				if err := opts.Client.RenameSession(req.OldName, req.NewName); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				if fresh, err := opts.Client.ListSessions(); err == nil {
-					opts.StateMgr.UpdateSessions(fresh)
-				}
-				w.WriteHeader(http.StatusNoContent)
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/rename", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionRename(w, r, actionRouter, opts)
 			})
 
-			r.Post("/session/select-window", func(w http.ResponseWriter, r *http.Request) {
-				var req struct {
-					Session string `json:"session"`
-					Window  int    `json:"window"`
-					Host    string `json:"host,omitempty"`
-					Pane    string `json:"pane,omitempty"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Session == "" {
-					http.Error(w, "session and window are required", http.StatusBadRequest)
-					return
-				}
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/select-window", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionSelectWindow(w, r, actionRouter)
+			})
 
-				// Remote host — forward via peer connection
-				if req.Host != "" && opts.PeerMgr != nil && !opts.PeerMgr.IsLocal(req.Host) {
-					peerConn := opts.PeerMgr.GetPeerConnection(req.Host)
-					if peerConn == nil {
-						http.Error(w, "peer not connected", http.StatusBadGateway)
-						return
-					}
-					params, _ := json.Marshal(map[string]interface{}{
-						"session": req.Session,
-						"window":  req.Window,
-						"pane":    req.Pane,
-					})
-					msg, _ := peer.NewMessage(peer.MsgSessionAction, peer.SessionActionPayload{
-						Action: "select-window",
-						Params: params,
-					})
-					select {
-					case peerConn.Send <- msg:
-						w.WriteHeader(http.StatusNoContent)
-					default:
-						http.Error(w, "peer send queue full", http.StatusBadGateway)
-					}
-					return
-				}
-
-				index := fmt.Sprintf("%d", req.Window)
-				if err := opts.Client.SelectWindow(req.Session, index); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				if req.Pane != "" {
-					if err := opts.Client.SelectPane(req.Pane); err != nil {
-						logrus.WithError(err).Warn("failed to select pane")
-					}
-				}
-				w.WriteHeader(http.StatusNoContent)
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/select-pane", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionSelectPane(w, r, actionRouter)
 			})
 
 			// Tool event query/management (auth-protected)
@@ -402,12 +338,12 @@ func Run(ctx context.Context, opts *Options) error {
 				json.NewEncoder(w).Encode(events)
 			})
 
-			r.Delete("/tool-events", func(w http.ResponseWriter, r *http.Request) {
+			mutations.Delete("/tool-events", func(w http.ResponseWriter, r *http.Request) {
 				opts.Tracker.ClearAll()
 				w.WriteHeader(http.StatusNoContent)
 			})
 
-			r.Delete("/tool-event", func(w http.ResponseWriter, r *http.Request) {
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Delete("/tool-event", func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
 					Host    string `json:"host"`
 					Session string `json:"session"`
@@ -538,7 +474,7 @@ func Run(ctx context.Context, opts *Options) error {
 				})
 			})
 
-			r.Post("/push/subscribe", func(w http.ResponseWriter, r *http.Request) {
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.WebAuthnLimit)).Post("/push/subscribe", func(w http.ResponseWriter, r *http.Request) {
 				if opts.PushStore == nil {
 					http.Error(w, "push notifications not configured", http.StatusServiceUnavailable)
 					return
@@ -552,7 +488,7 @@ func Run(ctx context.Context, opts *Options) error {
 				w.WriteHeader(http.StatusNoContent)
 			})
 
-			r.Post("/push/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/push/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
 				if opts.PushStore == nil {
 					http.Error(w, "push notifications not configured", http.StatusServiceUnavailable)
 					return
@@ -580,7 +516,7 @@ func Run(ctx context.Context, opts *Options) error {
 				json.NewEncoder(w).Encode(prefs)
 			})
 
-			r.Put("/preferences", func(w http.ResponseWriter, r *http.Request) {
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Put("/preferences", func(w http.ResponseWriter, r *http.Request) {
 				if opts.PrefStore == nil {
 					http.Error(w, "preferences not available", http.StatusServiceUnavailable)
 					return
@@ -599,7 +535,7 @@ func Run(ctx context.Context, opts *Options) error {
 			})
 
 			// Pairing code generation (for the hub to generate codes)
-			r.Post("/pair", func(w http.ResponseWriter, r *http.Request) {
+			mutations.With(admissionMiddleware(ingressPolicy, ingress.CategoryPairing)).Post("/pair", func(w http.ResponseWriter, r *http.Request) {
 				if opts.PairingMgr == nil {
 					http.Error(w, "pairing not available", http.StatusServiceUnavailable)
 					return
@@ -636,21 +572,28 @@ func Run(ctx context.Context, opts *Options) error {
 
 	if opts.AuthEnabled {
 		authMw := auth.Middleware(opts.SessionMgr, opts.SecureCookies)
-		r.With(authMw).Get("/ws/events", hub.HandleEvents)
-		r.With(authMw).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
-			// Route remote sessions through PTY relay
+		publicRouter.With(authMw, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		publicRouter.With(authMw, originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
-			if opts.PeerMgr != nil && hostID != "" && !opts.PeerMgr.IsLocal(hostID) {
+			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
+				http.Error(w, "explicit known host is required", http.StatusBadRequest)
+				return
+			}
+			if !opts.PeerMgr.IsLocal(hostID) {
 				handleRemoteSession(w, req, opts, hostID)
 				return
 			}
 			ptyHandler.HandleSession(w, req)
 		})
 	} else {
-		r.Get("/ws/events", hub.HandleEvents)
-		r.Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
+		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
-			if opts.PeerMgr != nil && hostID != "" && !opts.PeerMgr.IsLocal(hostID) {
+			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
+				http.Error(w, "explicit known host is required", http.StatusBadRequest)
+				return
+			}
+			if !opts.PeerMgr.IsLocal(hostID) {
 				handleRemoteSession(w, req, opts, hostID)
 				return
 			}
@@ -660,11 +603,15 @@ func Run(ctx context.Context, opts *Options) error {
 
 	// Peer WebSocket routes (no browser auth — peers use their own challenge-response)
 	if opts.PeerHandler != nil {
-		r.Get("/ws/peer", opts.PeerHandler.HandlePeer)
-		r.Post("/api/pair/complete", opts.PeerHandler.HandlePairing)
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeer)).Get("/ws/peer", opts.PeerHandler.HandlePeer)
+		publicRouter.With(
+			admissionMiddleware(ingressPolicy, ingress.CategoryPairing),
+			httpguard.BodyReadDeadline(10*time.Second),
+			httpguard.JSONBody(httpguard.PairingLimit),
+		).Post("/api/pair/complete", opts.PeerHandler.HandlePairing)
 	}
 	if opts.PTYRelay != nil {
-		r.Get("/ws/peer-pty", opts.PTYRelay.HandlePeerPTY)
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSPeerPTY)).Get("/ws/peer-pty", opts.PTYRelay.HandlePeerPTY)
 	}
 
 	// Serve embedded frontend
@@ -672,13 +619,14 @@ func Run(ctx context.Context, opts *Options) error {
 	if err != nil {
 		return fmt.Errorf("frontend fs: %w", err)
 	}
-	r.Get("/*", frontendHandler(sub).ServeHTTP)
+	publicRouter.Get("/*", frontendHandler(sub).ServeHTTP)
 
-	srv := &http.Server{
-		Handler:           r,
+	publicServer := &http.Server{
+		Handler:           publicRouter,
 		ErrorLog:          log.New(logger.WriterLevel(logrus.WarnLevel), "", 0),
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 		// Note: ReadTimeout and WriteTimeout are intentionally omitted.
 		// They apply to the underlying net.Conn and would kill long-lived
 		// WebSocket connections after the timeout period.
@@ -696,17 +644,13 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 
 	go func() {
-		serveErr := srv.Serve(tcpListener)
+		serveErr := publicServer.Serve(tcpListener)
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			logger.WithError(serveErr).Error("tcp listen error")
 			serverErr <- serveErr
 		}
 	}()
 
-	publicURL := opts.PublicURL
-	if publicURL == "" {
-		publicURL = "http://localhost:7654"
-	}
 	logger.WithField("listen", listenAddress).Info("starting TmuxAtlas HTTP origin")
 	logger.Infof("open %s in your browser", publicURL)
 	if opts.AuthEnabled {
@@ -719,24 +663,26 @@ func Run(ctx context.Context, opts *Options) error {
 	if socketPath == "" {
 		socketPath = socket.DefaultPath()
 	}
-	if err := socket.EnsureDir(socketPath); err != nil {
-		logger.WithError(err).Warn("failed to create socket directory, notify via socket will be unavailable")
+	unixListener, err = socket.Listen(socketPath)
+	if err != nil {
+		logger.WithError(err).Warn("failed to listen on unix socket, notify via socket will be unavailable")
 	} else {
-		// Remove stale socket file from a previous run
-		_ = socket.Cleanup(socketPath)
-
-		unixListener, err = net.Listen("unix", socketPath)
-		if err != nil {
-			logger.WithError(err).Warn("failed to listen on unix socket, notify via socket will be unavailable")
-		} else {
-			go func() {
-				if err := srv.Serve(unixListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					logger.WithError(err).Error("unix socket listen error")
-					serverErr <- err
-				}
-			}()
-			logger.WithField("socket", socketPath).Info("listening on unix socket")
+		localServer := &http.Server{
+			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager),
+			ReadHeaderTimeout: 5 * time.Second,
 		}
+		go func() {
+			if err := localServer.Serve(unixListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.WithError(err).Error("unix socket listen error")
+				serverErr <- err
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = localServer.Shutdown(shutdownCtx)
+		}()
+		logger.WithField("socket", socketPath).Info("listening on unix socket")
 	}
 
 	select {
@@ -749,7 +695,7 @@ func Run(ctx context.Context, opts *Options) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := publicServer.Shutdown(shutdownCtx); err != nil {
 		logger.WithError(err).Error("unable to shutdown gracefully")
 		return err
 	}

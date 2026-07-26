@@ -6,6 +6,7 @@ import { usePreferences } from '../hooks/usePreferences'
 import { toolColors, statusConfig } from '../theme'
 import { cn } from '../lib/utils'
 import { getBrandStorage, setBrandStorage } from '../lib/brandStorage'
+import { postRuntimeMutation } from '../lib/runtimeApi'
 
 interface SidebarProps {
   sessions: Session[]
@@ -14,7 +15,8 @@ interface SidebarProps {
   collapseMode: 'small' | 'hidden'
   hasMultipleHosts?: boolean
   onSessionSelect: (session: Session) => void
-  onSessionRenamed?: (oldName: string, newName: string) => void
+  onSessionRenamed?: (oldKey: string, newKey: string) => void
+  onRuntimeError?: (message: string) => void
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
@@ -99,6 +101,7 @@ export function Sidebar({
   hasMultipleHosts,
   onSessionSelect,
   onSessionRenamed,
+  onRuntimeError,
   getSessionEvents,
   sessionNeedsAttention,
   getSessionActivity,
@@ -106,9 +109,9 @@ export function Sidebar({
   const { prefs } = usePreferences()
   const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => getHiddenSessions())
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
-  const [renamingSession, setRenamingSession] = useState<string | null>(null)
+  const [renamingSession, setRenamingSession] = useState<Session | null>(null)
   const [renameValue, setRenameValue] = useState('')
-  const [contextMenu, setContextMenu] = useState<{ session: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ session: Session; x: number; y: number } | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -125,47 +128,49 @@ export function Sidebar({
     return () => window.removeEventListener('click', handler)
   }, [contextMenu])
 
-  const visibleSessions = [...sessions.filter(s => !hiddenSet.has(s.name))].sort((a, b) => a.name.localeCompare(b.name))
-  const hiddenSessions = sessions.filter(s => hiddenSet.has(s.name))
+  const visibleSessions = [...sessions.filter(s => !hiddenSet.has(sessionKey(s)))].sort((a, b) => a.name.localeCompare(b.name))
+  const hiddenSessions = sessions.filter(s => hiddenSet.has(sessionKey(s)))
 
-  const toggleHide = (name: string) => {
+  const toggleHide = (session: Session) => {
+    const key = sessionKey(session)
     const next = new Set(hiddenSet)
-    if (next.has(name)) next.delete(name)
-    else next.add(name)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
     setHiddenSet(next)
     setHiddenSessions(next)
     setContextMenu(null)
   }
 
-  const startRename = (name: string) => {
-    setRenamingSession(name)
-    setRenameValue(name)
+  const startRename = (session: Session) => {
+    setRenamingSession(session)
+    setRenameValue(session.name)
     setContextMenu(null)
   }
 
   const submitRename = async () => {
-    if (!renamingSession || !renameValue.trim() || renameValue === renamingSession) {
+    if (!renamingSession || !renameValue.trim() || renameValue === renamingSession.name) {
       setRenamingSession(null)
       return
     }
     try {
-      const res = await fetch('/api/session/rename', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ old_name: renamingSession, new_name: renameValue.trim() }),
+      await postRuntimeMutation('/api/session/rename', {
+        host_id: renamingSession.host,
+        session: renamingSession.name,
+        new_name: renameValue.trim(),
       })
-      if (res.ok) {
-        if (hiddenSet.has(renamingSession)) {
+      const oldKey = sessionKey(renamingSession)
+      const newKey = `${renamingSession.host}/${renameValue.trim()}`
+      if (hiddenSet.has(oldKey)) {
           const next = new Set(hiddenSet)
-          next.delete(renamingSession)
-          next.add(renameValue.trim())
+          next.delete(oldKey)
+          next.add(newKey)
           setHiddenSet(next)
           setHiddenSessions(next)
-        }
-        onSessionRenamed?.(renamingSession, renameValue.trim())
       }
+      onSessionRenamed?.(oldKey, newKey)
     } catch (err) {
       console.error('Failed to rename session:', err)
+      onRuntimeError?.(err instanceof Error ? err.message : 'The session action failed.')
     }
     setRenamingSession(null)
   }
@@ -177,7 +182,7 @@ export function Sidebar({
     const events = getSessionEvents(sk)
     const act = getSessionActivity(sk)
     const active = isSessionActive(session)
-    const isRenaming = renamingSession === session.name
+    const isRenaming = renamingSession ? sessionKey(renamingSession) === sk : false
     const isOffline = session.host && session.host_online === false
 
     return (
@@ -186,7 +191,7 @@ export function Sidebar({
           onClick={() => !isRenaming && onSessionSelect(session)}
           onContextMenu={(e) => {
             e.preventDefault()
-            setContextMenu({ session: session.name, x: e.clientX, y: e.clientY })
+            setContextMenu({ session, x: e.clientX, y: e.clientY })
           }}
           className={cn(
             'flex flex-col w-full p-3 rounded transition-all duration-200',
@@ -338,7 +343,7 @@ export function Sidebar({
             onClick={() => toggleHide(contextMenu.session)}
             className="px-3 py-1.5 text-sm text-popover-foreground cursor-pointer hover:bg-accent hover:text-accent-foreground"
           >
-            {hiddenSet.has(contextMenu.session) ? 'Unhide' : 'Hide'}
+            {hiddenSet.has(sessionKey(contextMenu.session)) ? 'Unhide' : 'Hide'}
           </div>
         </div>
       )}

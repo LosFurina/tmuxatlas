@@ -92,3 +92,17 @@ func TestLoopbackListenDetection(t *testing.T) {
 		t.Error("0.0.0.0 should not be loopback")
 	}
 }
+
+func TestValidateNoAuthMode(t *testing.T) {
+	local, _ := validatePublicURL("http://localhost:7654")
+	external, _ := validatePublicURL("https://tmuxatlas.example")
+	if err := validateNoAuthMode(true, "127.0.0.1:7654", local); err != nil {
+		t.Fatalf("local no-auth rejected: %v", err)
+	}
+	if err := validateNoAuthMode(true, "0.0.0.0:7654", local); err == nil {
+		t.Fatal("wildcard no-auth accepted")
+	}
+	if err := validateNoAuthMode(true, "127.0.0.1:7654", external); err == nil {
+		t.Fatal("external no-auth origin accepted")
+	}
+}

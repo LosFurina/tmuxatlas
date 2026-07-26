@@ -1,6 +1,17 @@
 # Multi-Host and Trusted Gateway Deployment
 
-TmuxAtlas can aggregate tmux sessions from several machines into one dashboard. The hub and peers use an application-level Ed25519 identity; public TLS belongs to a trusted gateway such as Cloudflare Tunnel or Nginx with an ACME certificate.
+TmuxAtlas can aggregate tmux sessions from several machines into one dashboard. The hub and peers use an application-level Ed25519 identity; public TLS belongs to a trusted gateway such as Cloudflare Tunnel or Nginx with an ACME certificate. Gateway filtering is additional defense: TmuxAtlas still enforces Passkey authentication, exact Host/Origin checks, resource limits, and Peer proofs.
+
+`--no-auth` is accepted only for an explicitly loopback listener and a localhost/loopback Public URL. It cannot be used behind Cloudflare Tunnel, Nginx, or another public gateway.
+
+Default application ingress limits are finite: 32 KiB request headers, 1 MiB
+global bodies, 4 KiB ordinary JSON, 16 KiB pairing JSON, 128 KiB
+WebAuthn/Push JSON, 5-second header reads, and 10–15-second JSON body reads.
+WebSocket categories each permit at most 64 live connections, with independent
+rate buckets for browser terminal, Peer control, and Peer PTY traffic. WebAuthn
+allows 16 and pairing 12 concurrent operations; the application-wide in-flight
+ceiling is 128. These defaults protect a single-admin Hub and remain enforced
+behind Cloudflare Tunnel or Nginx.
 
 ## Architecture and trust boundaries
 
@@ -175,7 +186,7 @@ tmuxatlas pair
 Join from each peer using the public, trusted gateway URL:
 
 ```bash
-tmuxatlas pair --hub https://tmuxatlas.example.com --code WORD-WORD-WORD
+tmuxatlas pair --hub https://tmuxatlas.example.com --code WORD-WORD-WORD-WORD-WORD-WORD
 tmuxatlas agent
 tmuxatlas install --mode agent
 ```
@@ -195,6 +206,59 @@ tmuxatlas agent --hub http://127.0.0.1:7654
 ```
 
 Bare hostnames default to a secure connection. A self-signed or hostname-invalid gateway certificate is rejected.
+
+## Runtime protocol v1 and upgrade order
+
+Multi-host control now uses a mandatory runtime-v1 hello after Ed25519
+authentication. The hello negotiates a common protocol version and capabilities
+before a Peer becomes online. Session mutations are correlated requests: the Hub
+reports success only after the Agent returns a terminal result. Remote PTY data
+uses generation-bound binary/control frames and a one-time attachment token.
+
+This is a breaking protocol change. Upgrade one deployment as a set:
+
+1. update and restart the Hub;
+2. update and restart every Agent;
+3. confirm `/api/hosts` reports `runtime_protocol: 1`, a non-zero `generation`,
+   the expected `capabilities`, and the Agent build version;
+4. test one remote rename and terminal, including resize, before completing the
+   rollout.
+
+An old Agent that omits the hello remains offline and the Hub logs
+`protocol-incompatible`; it is never guessed to be compatible. A compatible
+Agent missing an optional feature receives `capability-unsupported` for that
+operation. The web UI and embedded frontend must come from the same Hub binary:
+every mutation and terminal open now requires both `host_id` and `session`.
+There is no missing-host fallback to Hub-local tmux, including when two machines
+have sessions with the same name.
+
+Do not roll back only one side. To roll back, stop the Hub and Agents, restore
+the previous Hub binary and its matching embedded frontend, restore the same
+previous Agent binary everywhere, and restore the Peer-store backup only if the
+older release requires it. Interactive terminals and in-flight actions are not
+migrated across an upgrade or rollback.
+
+Agent action outcome retention defaults to five minutes, 1024 requests, and
+64 KiB per terminal result/error. Operators with unusually constrained or busy
+Agents may set:
+
+```dotenv
+TMUXATLAS_PEER_OUTCOME_TTL=5m
+TMUXATLAS_PEER_OUTCOME_MAX_ENTRIES=1024
+TMUXATLAS_PEER_OUTCOME_MAX_BYTES=65536
+```
+
+Changing the Agent process instance intentionally ends any result-unknown
+in-flight action as `execution-unknown`; TmuxAtlas will not replay an
+unprovable side effect after a crash.
+
+## Live Peer revocation
+
+`tmuxatlas peers remove <name>` first calls the running Hub through its private
+Unix socket. The Hub atomically persists the authorization removal, then closes
+the active control generation, pending actions, and remote PTYs. If the Hub is
+not running, the command updates `peers.json` directly for the next start. A
+running Hub rejection is never bypassed with a direct file write.
 
 ## systemd examples
 
@@ -268,6 +332,14 @@ When TmuxAtlas first reads a legacy peer store, it:
 
 Migration is idempotent. The old certificate and key files are not read or deleted. Keep the backup during rollout; after verifying browser login, pairing, peer state, and a remote terminal, unused TLS files may be deleted manually. To roll back, stop TmuxAtlas, restore the old binary and backup peer store, or re-pair peers.
 
+After upgrading, rerun `tmuxatlas agent-setup` on every Hub and Agent. Old
+`--server`, `TMUXATLAS_URL`, and `GUPPI_URL` notify settings are intentionally
+unsupported because hook events are Unix-socket-only. Existing Passkey and Peer
+identity files are validated but never rewritten by this migration. Pending
+three-word pairing codes are invalid; generate a new six-word code. For rollback,
+stop the service, restore the previous binary and its peer-store backup, then
+restore the previous hook configuration only if the old binary is also restored.
+
 ## Verification and troubleshooting
 
 Run these checks through the public hostname:
@@ -283,5 +355,7 @@ Then verify:
 - a peer remains online and its sessions update;
 - opening a remote session creates a working interactive terminal;
 - the gateway logs successful `101 Switching Protocols` responses for `/ws/peer` and `/ws/peer-pty`.
+- `/api/hosts` shows the expected build, runtime protocol, generation, and
+  capabilities for every online Agent.
 
 If the dashboard loads but WebSockets fail, check `Host`, `Upgrade`, and `Connection` forwarding and the proxy timeouts. If peers report certificate errors, verify DNS, certificate hostname coverage, the full ACME chain, system time, and the local operating-system trust store. Do not bypass verification.

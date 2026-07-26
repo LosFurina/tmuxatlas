@@ -26,13 +26,11 @@ function safeDestination(value) {
 
 function sessionDestination(payload) {
   if (typeof payload.url === 'string') return safeDestination(payload.url)
-  if (typeof payload.session !== 'string' || payload.session.length === 0) return '/'
+  if (typeof payload.session !== 'string' || payload.session.length === 0 ||
+      typeof payload.host !== 'string' || payload.host.length === 0) return '/'
 
   const session = encodeURIComponent(payload.session)
-  if (typeof payload.host === 'string' && payload.host.length > 0) {
-    return `/session/${encodeURIComponent(payload.host)}/${session}`
-  }
-  return `/session/${session}`
+  return `/session/${encodeURIComponent(payload.host)}/${session}`
 }
 
 function parsePushPayload(event) {

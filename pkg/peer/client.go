@@ -2,7 +2,9 @@ package peer
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -76,7 +78,12 @@ type Client struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
 
-	ptyManager *PTYManager
+	ptyManager          *PTYManager
+	instanceID          string
+	runtimeGeneration   uint64
+	runtimeCapabilities map[string]struct{}
+	outcomeCache        *OutcomeCache
+	dispatcher          *RequestDispatcher
 }
 
 // NewClient creates a new peer client
@@ -94,7 +101,14 @@ func NewClient(hubURL string, id *identity.Identity, peerStore *identity.PeerSto
 		actTracker:  actTracker,
 		toolTracker: toolTracker,
 		tmuxClient:  tmuxClient,
+		instanceID:  randomInstanceID(),
 	}
+	cacheConfig, err := OutcomeCacheConfigFromEnv()
+	if err != nil {
+		logrus.WithError(err).Warn("invalid Peer outcome cache configuration; using defaults")
+		cacheConfig = DefaultOutcomeCacheConfig()
+	}
+	c.outcomeCache, _ = NewOutcomeCache(cacheConfig, nil)
 	c.ptyManager = NewPTYManager(tmuxPath, actTracker, c)
 	return c
 }
@@ -157,6 +171,7 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	c.mu.Unlock()
 
 	defer func() {
+		c.ptyManager.CloseAll("control-disconnected")
 		c.mu.Lock()
 		c.conn = nil
 		c.mu.Unlock()
@@ -214,6 +229,48 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 
 	log.Info("authenticated with hub")
 
+	helloMessage, _ := NewMessage(MsgHello, HelloPayload{
+		MinVersion: RuntimeProtocolMin, MaxVersion: RuntimeProtocolMax,
+		Capabilities: RuntimeCapabilities, BuildVersion: common.VERSION,
+		AgentInstanceID: c.instanceID,
+	})
+	if err := conn.WriteJSON(helloMessage); err != nil {
+		return fmt.Errorf("send runtime hello: %w", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	var helloAckMessage Message
+	if err := conn.ReadJSON(&helloAckMessage); err != nil {
+		return fmt.Errorf("read runtime hello ack: %w", err)
+	}
+	if helloAckMessage.Type == MsgRuntimeError {
+		var runtimeError RuntimeError
+		_ = json.Unmarshal(helloAckMessage.Payload, &runtimeError)
+		return fmt.Errorf("runtime negotiation failed: %w", runtimeError)
+	}
+	if helloAckMessage.Type != MsgHelloAck {
+		return fmt.Errorf("expected runtime hello ack, got %s", helloAckMessage.Type)
+	}
+	var helloAck HelloAckPayload
+	if err := json.Unmarshal(helloAckMessage.Payload, &helloAck); err != nil {
+		return fmt.Errorf("parse runtime hello ack: %w", err)
+	}
+	if err := helloAck.Validate(); err != nil || helloAck.AgentInstanceID != c.instanceID {
+		return fmt.Errorf("invalid runtime hello ack: %v", err)
+	}
+	c.mu.Lock()
+	c.runtimeGeneration = helloAck.Generation
+	c.runtimeCapabilities = make(map[string]struct{}, len(helloAck.Capabilities))
+	for _, capability := range helloAck.Capabilities {
+		c.runtimeCapabilities[capability] = struct{}{}
+	}
+	c.dispatcher = &RequestDispatcher{
+		Generation: helloAck.Generation, HostID: c.peerMgr.LocalID(),
+		Capabilities: c.runtimeCapabilities, Executor: tmuxRuntimeExecutor{client: c.tmuxClient},
+		Cache: c.outcomeCache,
+	}
+	c.mu.Unlock()
+	log.WithField("generation", helloAck.Generation).Info("runtime protocol negotiated")
+
 	// Configure ping/pong for connection liveness detection
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -245,8 +302,23 @@ func (c *Client) connectAndRun(ctx context.Context) error {
 	}
 }
 
+func randomInstanceID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic("system random source unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(value)
+}
+
 func (c *Client) handleHubMessage(msg *Message, conn *websocket.Conn, log *logrus.Entry) {
 	switch msg.Type {
+	case MsgRuntimeRequest:
+		var request RuntimeRequest
+		if err := json.Unmarshal(msg.Payload, &request); err != nil {
+			log.WithError(err).Debug("invalid runtime request")
+			return
+		}
+		go c.handleRuntimeRequest(request, conn)
 	case MsgPeerState:
 		var payload PeerStatePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
@@ -289,27 +361,6 @@ func (c *Client) handleHubMessage(msg *Message, conn *websocket.Conn, log *logru
 		}
 		go c.ptyManager.Open(payload)
 
-	case MsgPTYClose:
-		var payload PTYClosePayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			return
-		}
-		c.ptyManager.Close(payload.StreamID)
-
-	case MsgPTYResize:
-		var payload PTYResizePayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			return
-		}
-		c.ptyManager.Resize(payload.StreamID, payload.Cols, payload.Rows)
-
-	case MsgSessionAction:
-		var payload SessionActionPayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
-			return
-		}
-		c.handleSessionAction(&payload, conn, log)
-
 	case MsgRequestState:
 		c.sendStateUpdate(conn)
 
@@ -318,58 +369,27 @@ func (c *Client) handleHubMessage(msg *Message, conn *websocket.Conn, log *logru
 	}
 }
 
-func (c *Client) handleSessionAction(payload *SessionActionPayload, conn *websocket.Conn, log *logrus.Entry) {
-	if c.tmuxClient == nil {
-		log.Warn("no tmux client available for session action")
+func (c *Client) handleRuntimeRequest(request RuntimeRequest, conn *websocket.Conn) {
+	c.mu.Lock()
+	dispatcher := c.dispatcher
+	c.mu.Unlock()
+	if dispatcher == nil {
 		return
 	}
-
-	switch payload.Action {
-	case "new":
-		var params struct {
-			Name string `json:"name"`
+	ack, outcome := dispatcher.Dispatch(context.Background(), request)
+	if ack.Accepted {
+		if message, err := NewMessage(MsgRuntimeAck, ack); err == nil {
+			c.writeJSON(conn, message)
 		}
-		if err := json.Unmarshal(payload.Params, &params); err != nil || params.Name == "" {
-			log.WithError(err).Debug("invalid new session params")
-			return
+	}
+	if outcome.Error != nil {
+		if message, err := NewMessage(MsgRuntimeError, outcome.Error); err == nil {
+			c.writeJSON(conn, message)
 		}
-		if err := c.tmuxClient.NewSession(params.Name); err != nil {
-			log.WithError(err).Warn("failed to create session on peer")
-			return
-		}
-		// Send updated state so hub sees the new session
-		c.sendStateUpdate(conn)
-
-	case "rename":
-		var params struct {
-			OldName string `json:"old_name"`
-			NewName string `json:"new_name"`
-		}
-		if err := json.Unmarshal(payload.Params, &params); err != nil {
-			return
-		}
-		if err := c.tmuxClient.RenameSession(params.OldName, params.NewName); err != nil {
-			log.WithError(err).Warn("failed to rename session on peer")
-			return
-		}
-		c.sendStateUpdate(conn)
-
-	case "select-window":
-		var params struct {
-			Session string `json:"session"`
-			Window  int    `json:"window"`
-			Pane    string `json:"pane,omitempty"`
-		}
-		if err := json.Unmarshal(payload.Params, &params); err != nil {
-			return
-		}
-		c.tmuxClient.SelectWindow(params.Session, fmt.Sprintf("%d", params.Window))
-		if params.Pane != "" {
-			c.tmuxClient.SelectPane(params.Pane)
-		}
-
-	default:
-		log.WithField("action", payload.Action).Debug("unknown session action")
+		return
+	}
+	if message, err := NewMessage(MsgRuntimeResult, outcome.Result); err == nil {
+		c.writeJSON(conn, message)
 	}
 }
 
@@ -517,4 +537,10 @@ func (c *Client) writeJSON(conn *websocket.Conn, msg *Message) {
 // HubURL returns the hub URL for PTY connections
 func (c *Client) HubURL() string {
 	return c.hubURL
+}
+
+func (c *Client) RuntimeGeneration() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.runtimeGeneration
 }

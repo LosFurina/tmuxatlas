@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { authenticatePasskey, registerPasskey } from '../lib/webauthn'
+import { apiFetch, setCSRFToken } from '../lib/api'
 
 interface AuthState {
   loading: boolean
@@ -18,17 +19,7 @@ let interceptorInstalled = false
 function installFetchInterceptor() {
   if (interceptorInstalled) return
   interceptorInstalled = true
-  const originalFetch = window.fetch
-  window.fetch = async (...args) => {
-    const res = await originalFetch(...args)
-    if (res.status === 401) {
-      const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url
-      if (!url.includes('/api/auth/')) {
-        window.dispatchEvent(new Event('auth:unauthorized'))
-      }
-    }
-    return res
-  }
+  window.fetch = apiFetch
 }
 
 export function useAuth(): AuthState {
@@ -62,6 +53,7 @@ export function useAuth(): AuthState {
         }
         const checkRes = await fetch('/api/auth/check')
         const check = await checkRes.json()
+        setCSRFToken(check.csrf_token)
         setAuthenticated(check.authenticated === true)
       } catch {
         setAuthenticated(false)
@@ -82,6 +74,9 @@ export function useAuth(): AuthState {
     setError(null)
     try {
       await registerPasskey(setupToken.trim(), label.trim())
+      const checkRes = await fetch('/api/auth/check')
+      const check = await checkRes.json()
+      setCSRFToken(check.csrf_token)
       setNeedsSetup(false)
       setAuthenticated(true)
       return true
@@ -95,6 +90,9 @@ export function useAuth(): AuthState {
     setError(null)
     try {
       await authenticatePasskey()
+      const checkRes = await fetch('/api/auth/check')
+      const check = await checkRes.json()
+      setCSRFToken(check.csrf_token)
       setAuthenticated(true)
       return true
     } catch (cause) {
@@ -105,11 +103,12 @@ export function useAuth(): AuthState {
 
   const logout = useCallback(async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' })
+      await apiFetch('/api/auth/logout', { method: 'POST' })
     } catch {
       // The local UI should still return to the sign-in screen.
     }
     setAuthenticated(false)
+    setCSRFToken(null)
   }, [])
 
   return {

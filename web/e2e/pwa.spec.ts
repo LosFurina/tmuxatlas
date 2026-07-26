@@ -219,6 +219,7 @@ test('keeps Push payloads and notification clicks on the Hub origin', async ({ p
         json: () => ({
           title: 'Codex needs input',
           body: 'waiting in session "project.v2"',
+          host: 'host-a',
           session: 'project.v2',
         }),
       },
@@ -264,7 +265,7 @@ test('keeps Push payloads and notification clicks on the Hub origin', async ({ p
     title: 'Codex needs input',
     options: {
       body: 'waiting in session "project.v2"',
-      data: { url: '/session/project.v2' },
+      data: { url: '/session/host-a/project.v2' },
     },
   })
   expect(result.notifications[1]).toMatchObject({

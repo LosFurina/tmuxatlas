@@ -193,8 +193,6 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	session := c.String("session")
 	window := int(c.Int("window"))
 	pane := c.String("pane")
-	serverURL := c.String("server")
-
 	log := logrus.WithField("component", "notify")
 
 	log.WithFields(logrus.Fields{
@@ -294,30 +292,12 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		socketPath = socket.DefaultPath()
 	}
 
-	var resp *http.Response
-
-	// Try Unix socket first unless --server was explicitly set
-	if !c.IsSet("server") {
-		log.WithField("socket", socketPath).Trace("attempting unix socket")
-		resp, err = postViaSocket(socketPath, body)
-		if err != nil {
-			log.WithError(err).Trace("unix socket failed, will try HTTP")
-		} else {
-			log.WithField("status_code", resp.StatusCode).Trace("unix socket response")
-		}
+	log.WithField("socket", socketPath).Trace("sending via unix socket")
+	resp, err := postViaSocket(socketPath, body)
+	if err != nil {
+		return fmt.Errorf("failed to notify TmuxAtlas through Unix socket %s: %w (make sure the hub or agent service is running)", socketPath, err)
 	}
-
-	// Fall back to HTTP
-	if resp == nil {
-		url := fmt.Sprintf("%s/api/tool-event", serverURL)
-		log.WithField("url", url).Trace("sending via HTTP")
-		httpClient := &http.Client{Timeout: 1 * time.Second}
-		resp, err = httpClient.Post(url, "application/json", bytes.NewReader(body))
-		if err != nil {
-			return fmt.Errorf("failed to notify TmuxAtlas: %w", err)
-		}
-		log.WithField("status_code", resp.StatusCode).Trace("HTTP response")
-	}
+	log.WithField("status_code", resp.StatusCode).Trace("unix socket response")
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
@@ -369,12 +349,6 @@ func init() {
 		&cli.StringFlag{
 			Name:  "pane",
 			Usage: "tmux pane ID (auto-detected if omitted)",
-		},
-		&cli.StringFlag{
-			Name:    "server",
-			Usage:   "TmuxAtlas server URL (HTTP fallback)",
-			Sources: cli.EnvVars("TMUXATLAS_URL", "GUPPI_URL"),
-			Value:   "http://localhost:7654",
 		},
 		&cli.StringFlag{
 			Name:    "socket",

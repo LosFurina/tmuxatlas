@@ -16,7 +16,9 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
+	"github.com/LosFurina/tmuxatlas/pkg/peer"
 )
 
 type level string
@@ -102,12 +104,42 @@ func runChecks() []check {
 	}
 	checks = append(checks, check{levelOK, "config directory", configDir})
 	checks = append(checks, fileModeCheck("environment file", filepath.Join(configDir, ".env"), 0o600))
+	for _, legacy := range []string{"TMUXATLAS_URL", "GUPPI_URL"} {
+		if os.Getenv(legacy) != "" {
+			checks = append(checks, check{
+				levelWarn, "legacy hook config",
+				legacy + " is ignored by notify; rerun `tmuxatlas agent-setup` to install Unix-only hooks",
+			})
+		}
+	}
+	if err := identity.ValidateStoredIdentity(); err != nil {
+		if os.IsNotExist(err) {
+			checks = append(checks, check{levelWarn, "node identity", "identity.json does not exist yet"})
+		} else {
+			checks = append(checks, check{levelFail, "node identity", err.Error()})
+		}
+	} else {
+		checks = append(checks, check{levelOK, "node identity", "identity.json contains a valid Ed25519 keypair"})
+	}
+	if count, err := identity.ValidateStoredPeers(); err != nil {
+		checks = append(checks, check{levelFail, "Peer store", err.Error()})
+	} else {
+		checks = append(checks, check{levelOK, "Peer store", fmt.Sprintf("%d valid peer record(s)", count)})
+	}
 
 	agentMode := os.Getenv("TMUXATLAS_HUB") != ""
 	if agentMode {
 		hubCheck := publicURLCheck(os.Getenv("TMUXATLAS_HUB"))
 		hubCheck.Name = "Hub URL"
 		checks = append(checks, hubCheck)
+		if cache, err := peer.OutcomeCacheConfigFromEnv(); err != nil {
+			checks = append(checks, check{levelFail, "Peer outcome cache", err.Error()})
+		} else {
+			checks = append(checks, check{
+				levelOK, "Peer outcome cache",
+				fmt.Sprintf("TTL %s, %d entries, %d bytes/result", cache.TTL, cache.MaxEntries, cache.MaxResultSize),
+			})
+		}
 	} else {
 		publicURL := firstNonEmpty(os.Getenv("TMUXATLAS_PUBLIC_URL"), "http://localhost:7654")
 		checks = append(checks, publicURLCheck(publicURL))

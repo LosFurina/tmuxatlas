@@ -1,3 +1,5 @@
+import { apiFetch } from './api'
+
 function decodeBase64URL(value: string): ArrayBuffer {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
@@ -69,7 +71,7 @@ export function ensurePasskeysSupported() {
 
 export async function registerPasskey(setupToken = '', label = ''): Promise<void> {
   ensurePasskeysSupported()
-  const begin = await fetch('/api/auth/passkey/register/begin', {
+  const begin = await apiFetch('/api/auth/passkey/register/begin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ setup_token: setupToken, label }),
@@ -83,7 +85,7 @@ export async function registerPasskey(setupToken = '', label = ''): Promise<void
   const response = credential.response as AuthenticatorAttestationResponse
   const transports = typeof response.getTransports === 'function' ? response.getTransports() : []
 
-  const finish = await fetch('/api/auth/passkey/register/finish', {
+  const finish = await apiFetch('/api/auth/passkey/register/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -104,7 +106,10 @@ export async function registerPasskey(setupToken = '', label = ''): Promise<void
 
 export async function authenticatePasskey(): Promise<void> {
   ensurePasskeysSupported()
-  const begin = await fetch('/api/auth/passkey/login/begin', { method: 'POST' })
+  const begin = await apiFetch('/api/auth/passkey/login/begin', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
   if (!begin.ok) throw new Error(await responseError(begin, 'Could not start passkey sign-in'))
 
   const credential = await navigator.credentials.get(
@@ -113,7 +118,7 @@ export async function authenticatePasskey(): Promise<void> {
   if (!credential) throw new Error('Passkey sign-in was cancelled')
   const response = credential.response as AuthenticatorAssertionResponse
 
-  const finish = await fetch('/api/auth/passkey/login/finish', {
+  const finish = await apiFetch('/api/auth/passkey/login/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

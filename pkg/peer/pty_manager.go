@@ -1,6 +1,9 @@
 package peer
 
 import (
+	"context"
+	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -10,160 +13,222 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 )
 
-// PTYManager manages local PTY sessions spawned on behalf of remote browsers
 type PTYManager struct {
 	mu       sync.RWMutex
 	sessions map[string]*ActivePTY
 	tmuxPath string
 	activity *activity.Tracker
 	client   *Client
+	openPTY  func(string, string, uint16, uint16) (ptyDevice, error)
 }
 
-// ActivePTY is a local PTY session being relayed to a remote browser via the hub
+type ptyDevice interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Resize(uint16, uint16) error
+	Close()
+}
+
 type ActivePTY struct {
 	StreamID string
-	PTY      *tmux.PTYSession
+	Target   SessionTarget
+	PTY      ptyDevice
 	HubWS    *websocket.Conn
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	once   sync.Once
+	wg     sync.WaitGroup
 }
 
-// NewPTYManager creates a new PTY manager
 func NewPTYManager(tmuxPath string, actTracker *activity.Tracker, client *Client) *PTYManager {
-	return &PTYManager{
+	manager := &PTYManager{
 		sessions: make(map[string]*ActivePTY),
 		tmuxPath: tmuxPath,
 		activity: actTracker,
 		client:   client,
 	}
+	manager.openPTY = func(path, session string, cols, rows uint16) (ptyDevice, error) {
+		return tmux.NewPTYSession(path, session, cols, rows)
+	}
+	return manager
 }
 
-// Open spawns a local PTY and connects it to the hub via a dedicated WebSocket
-func (pm *PTYManager) Open(req PTYOpenPayload) {
-	log := logrus.WithFields(logrus.Fields{
-		"stream":  req.StreamID,
-		"session": req.Session,
-	})
-
-	// Spawn local PTY
-	ptySess, err := tmux.NewPTYSession(pm.tmuxPath, req.Session, req.Cols, req.Rows)
+func (pm *PTYManager) Open(request PTYOpenPayload) {
+	log := logrus.WithFields(logrus.Fields{"stream": request.StreamID, "session": request.Target.Session})
+	if request.StreamID == "" || request.AttachToken == "" || request.Generation == 0 ||
+		request.Cols == 0 || request.Rows == 0 || request.Target.Validate() != nil ||
+		request.Target.HostID != pm.client.peerMgr.LocalID() ||
+		request.Generation != pm.client.RuntimeGeneration() {
+		log.Warn("rejected invalid or stale PTY open")
+		return
+	}
+	ptySession, err := pm.openPTY(pm.tmuxPath, request.Target.Session, request.Cols, request.Rows)
 	if err != nil {
 		log.WithError(err).Error("failed to spawn PTY")
 		return
 	}
-
-	// Connect PTY WebSocket to hub
-	hubWS, err := pm.connectPTYWebSocket(req.StreamID)
+	hubWS, err := pm.connectPTYWebSocket(request)
 	if err != nil {
-		log.WithError(err).Error("failed to connect PTY WebSocket to hub")
-		ptySess.Close()
+		log.WithError(err).Error("failed to attach PTY data channel")
+		ptySession.Close()
 		return
 	}
-
+	ctx, cancel := context.WithCancel(context.Background())
 	active := &ActivePTY{
-		StreamID: req.StreamID,
-		PTY:      ptySess,
-		HubWS:    hubWS,
+		StreamID: request.StreamID, Target: request.Target, PTY: ptySession,
+		HubWS: hubWS, ctx: ctx, cancel: cancel,
 	}
-
 	pm.mu.Lock()
-	pm.sessions[req.StreamID] = active
+	if previous := pm.sessions[request.StreamID]; previous != nil {
+		pm.mu.Unlock()
+		active.Teardown("duplicate-stream")
+		return
+	}
+	active.wg.Add(2)
+	pm.sessions[request.StreamID] = active
 	pm.mu.Unlock()
 
-	log.Info("PTY relay started")
-
-	// Run bidirectional relay
 	done := make(chan struct{}, 2)
-
-	// PTY → Hub WebSocket (terminal output)
 	go func() {
+		defer active.wg.Done()
 		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 32*1024)
+		var outputSequence uint64
+		buffer := make([]byte, 32*1024)
 		for {
-			n, err := ptySess.Read(buf)
+			n, err := ptySession.Read(buffer)
 			if err != nil {
 				return
 			}
 			if pm.activity != nil {
-				pm.activity.Record(req.Session, n)
+				pm.activity.Record(request.Target.Session, n)
 			}
-			if err := hubWS.WriteMessage(websocket.BinaryMessage, buf[:n]); err != nil {
+			outputSequence++
+			frame, err := EncodePTYDataFrame(PTYDataOutput, outputSequence, buffer[:n])
+			if err != nil || hubWS.WriteMessage(websocket.BinaryMessage, frame) != nil {
 				return
 			}
 		}
 	}()
-
-	// Hub WebSocket → PTY (keyboard input + resize)
 	go func() {
+		defer active.wg.Done()
 		defer func() { done <- struct{}{} }()
+		var inputSequence, controlSequence PTYSequence
 		for {
-			msgType, data, err := hubWS.ReadMessage()
+			messageType, data, err := hubWS.ReadMessage()
 			if err != nil {
 				return
 			}
-			switch msgType {
+			switch messageType {
 			case websocket.BinaryMessage:
-				if _, err := ptySess.Write(data); err != nil {
+				frame, err := DecodePTYDataFrame(data)
+				if err != nil || frame.Direction != PTYDataInput {
+					return
+				}
+				duplicate, err := inputSequence.Accept(frame.Sequence)
+				if err != nil {
+					return
+				}
+				if duplicate {
+					continue
+				}
+				if _, err := ptySession.Write(frame.Payload); err != nil {
 					return
 				}
 			case websocket.TextMessage:
-				// Could be resize, but resize comes over control channel
+				frame, err := DecodePTYControlFrame(data)
+				if err != nil {
+					return
+				}
+				duplicate, err := controlSequence.Accept(frame.Sequence)
+				if err != nil {
+					return
+				}
+				if duplicate {
+					continue
+				}
+				switch frame.Type {
+				case "resize":
+					if err := ptySession.Resize(frame.Cols, frame.Rows); err != nil {
+						return
+					}
+				case "close", "error":
+					return
+				}
+			default:
+				return
 			}
 		}
 	}()
 
-	// Wait for either side
 	<-done
-
-	pm.cleanup(req.StreamID)
-	<-done
-
+	active.Teardown("relay-ended")
+	active.wg.Wait()
+	pm.mu.Lock()
+	if pm.sessions[request.StreamID] == active {
+		delete(pm.sessions, request.StreamID)
+	}
+	pm.mu.Unlock()
 	log.Info("PTY relay stopped")
 }
 
-// Close closes a PTY session by stream ID
-func (pm *PTYManager) Close(streamID string) {
-	pm.cleanup(streamID)
+func (active *ActivePTY) Teardown(_ string) {
+	active.once.Do(func() {
+		active.cancel()
+		_ = active.HubWS.Close()
+		active.PTY.Close()
+	})
 }
 
-// Resize resizes a PTY session
+func (pm *PTYManager) Close(streamID string) {
+	pm.mu.RLock()
+	active := pm.sessions[streamID]
+	pm.mu.RUnlock()
+	if active != nil {
+		active.Teardown("control-close")
+	}
+}
+
+func (pm *PTYManager) CloseAll(reason string) {
+	pm.mu.RLock()
+	active := make([]*ActivePTY, 0, len(pm.sessions))
+	for _, session := range pm.sessions {
+		active = append(active, session)
+	}
+	pm.mu.RUnlock()
+	for _, session := range active {
+		session.Teardown(reason)
+	}
+	for _, session := range active {
+		session.wg.Wait()
+	}
+}
+
 func (pm *PTYManager) Resize(streamID string, cols, rows uint16) {
 	pm.mu.RLock()
-	active, ok := pm.sessions[streamID]
+	active := pm.sessions[streamID]
 	pm.mu.RUnlock()
-
-	if ok {
-		if err := active.PTY.Resize(cols, rows); err != nil {
-			logrus.WithField("stream", streamID).WithError(err).Debug("resize failed")
-		}
+	if active != nil && cols > 0 && rows > 0 {
+		_ = active.PTY.Resize(cols, rows)
 	}
 }
 
-func (pm *PTYManager) cleanup(streamID string) {
-	pm.mu.Lock()
-	active, ok := pm.sessions[streamID]
-	if ok {
-		delete(pm.sessions, streamID)
-	}
-	pm.mu.Unlock()
-
-	if ok {
-		active.PTY.Close()
-		active.HubWS.Close()
-	}
-}
-
-func (pm *PTYManager) connectPTYWebSocket(streamID string) (*websocket.Conn, error) {
+func (pm *PTYManager) connectPTYWebSocket(request PTYOpenPayload) (*websocket.Conn, error) {
 	u, err := hubWebSocketURL(pm.client.HubURL(), "/ws/peer-pty")
 	if err != nil {
 		return nil, err
 	}
-	q := u.Query()
-	q.Set("stream", streamID)
-	u.RawQuery = q.Encode()
-
+	query := u.Query()
+	query.Set("stream", request.StreamID)
+	query.Set("host", request.Target.HostID)
+	query.Set("session", request.Target.Session)
+	query.Set("generation", strconv.FormatUint(request.Generation, 10))
+	query.Set("token", request.AttachToken)
+	u.RawQuery = query.Encode()
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connect PTY data channel: %w", err)
 	}
-
+	conn.SetReadLimit(maxPTYFrameData + ptyDataHeaderSize)
 	return conn, nil
 }

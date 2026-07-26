@@ -18,7 +18,7 @@ tmuxatlas agent-setup --dry-run
 
 By default, `tmuxatlas agent-setup` appends `|| true` to all hook commands so that failures (TmuxAtlas binary missing, server down, etc.) never block the agent. This means hooks are fire-and-forget — if TmuxAtlas isn't reachable, the agent continues working normally.
 
-Additionally, `tmuxatlas notify` uses 1-second timeouts for both unix socket and HTTP connections, so even without `|| true` the worst-case delay is ~2 seconds.
+Additionally, `tmuxatlas notify` uses a 1-second Unix-socket timeout, so hook delivery cannot stall the agent for long.
 
 To disable this and let hook failures propagate to the agent:
 
@@ -174,7 +174,7 @@ echo '{"hook_event_name":"Stop","last_assistant_message":"Done"}' | tmuxatlas no
 | `--server` | | TmuxAtlas server URL (default: `http://localhost:7654`) |
 | `--socket` | | Unix socket path (auto-detected) |
 
-**Communication:** `tmuxatlas notify` tries the Unix socket first (zero-config when TmuxAtlas server is running locally), then falls back to HTTP. Both use 1-second timeouts to minimize impact on agent performance.
+**Communication:** `tmuxatlas notify` uses only the current user's private Unix socket. It never falls back to an unauthenticated HTTP endpoint. Run either the local Hub or Agent service on every machine that emits hook events.
 
 ## Inactivity-based waiting detection
 

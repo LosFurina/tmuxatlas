@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/LosFurina/tmuxatlas/compare/v0.6.0...v0.7.0) (2026-07-26)
+
+### Breaking changes
+
+- Added mandatory Peer runtime protocol v1 negotiation. Upgrade the Hub first,
+  then every Agent; legacy Agents remain offline until upgraded.
+- Session mutations and remote terminal opens require an explicit immutable
+  `host_id` plus session target. Missing-host fallback to Hub-local tmux was
+  removed.
+- Remote PTYs now use generation-bound framed data/control messages, validated
+  resize, and one-time attachment tokens.
+
+### Reliability and operations
+
+- Added correlated action results, bounded Agent outcome deduplication,
+  generation-safe Peer replacement, and `execution-unknown` handling across
+  Agent process changes.
+- `tmuxatlas peers remove` now performs live atomic revocation through the
+  private Hub Unix socket and immediately tears down requests and PTYs.
+
 ## [0.1.3-beta.2](https://github.com/LosFurina/tmuxatlas/compare/v0.1.2-beta.2...v0.1.3-beta.2) (2026-04-20)
 
 

@@ -3,7 +3,7 @@ import { Host } from '../hooks/useHosts'
 
 interface NewSessionModalProps {
   hosts: Host[]
-  onCreateSession: (name: string, hostId?: string) => void
+  onCreateSession: (name: string, hostId: string) => void
   onClose: () => void
 }
 
@@ -20,6 +20,12 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
   }, [])
 
   useEffect(() => {
+    if (!onlineHosts.some(host => host.id === selectedHost)) {
+      setSelectedHost(localHost?.id || onlineHosts[0]?.id || '')
+    }
+  }, [localHost?.id, onlineHosts, selectedHost])
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -34,7 +40,8 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
   const handleSubmit = () => {
     const trimmed = name.trim()
     if (!trimmed) return
-    onCreateSession(trimmed, selectedHost || undefined)
+    if (!selectedHost) return
+    onCreateSession(trimmed, selectedHost)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -91,7 +98,7 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
             </button>
             <button
               onClick={handleSubmit}
-              disabled={!name.trim()}
+              disabled={!name.trim() || !selectedHost}
               className="text-xs text-foreground bg-primary/20 hover:bg-primary/30 border border-primary/40 px-3 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Create

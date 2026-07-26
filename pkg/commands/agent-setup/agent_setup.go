@@ -20,12 +20,10 @@ type agentConfig struct {
 	key      string
 	binary   string
 	detected bool
-	setup    func(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error
+	setup    func(tmuxatlasBin string, resilient bool, extraDirs []string) error
 }
 
 func Execute(ctx context.Context, c *cli.Command) error {
-	serverURL := c.String("server")
-
 	// Parse --config-dir flags into map[agentKey][]string
 	extraDirs := make(map[string][]string)
 	for _, val := range c.StringSlice("config-dir") {
@@ -105,7 +103,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 			}
 		} else {
 			fmt.Printf("Configuring hooks for %s...\n", agent.name)
-			if err := agent.setup(serverURL, tmuxatlasBin, resilient, extras); err != nil {
+			if err := agent.setup(tmuxatlasBin, resilient, extras); err != nil {
 				logrus.WithError(err).WithField("agent", agent.name).Warn("failed to configure")
 				fmt.Printf("  Warning: %v\n", err)
 			} else {
@@ -120,12 +118,12 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Agent hooks configured. They will notify TmuxAtlas at:", serverURL)
+	fmt.Println("Agent hooks configured. They will notify TmuxAtlas through the local Unix socket.")
 	return nil
 }
 
 // setupClaude configures Claude Code hooks in ~/.claude/settings.json and any extra dirs
-func setupClaude(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
+func setupClaude(tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -224,7 +222,7 @@ func setupClaudeDir(configDir, tmuxatlasBin string, resilient bool) error {
 }
 
 // setupCodex configures Codex CLI via ~/.codex/config.toml and any extra dirs
-func setupCodex(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
+func setupCodex(tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -325,7 +323,7 @@ func setupCodexDir(configDir, tmuxatlasBin string, resilient bool) error {
 }
 
 // setupCopilot configures GitHub Copilot CLI hooks via ~/.copilot/hooks/tmuxatlas.json and any extra dirs
-func setupCopilot(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
+func setupCopilot(tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -391,7 +389,7 @@ func setupCopilotDir(configDir, tmuxatlasBin string, resilient bool) error {
 }
 
 // setupOpenCode configures OpenCode via native plugin in ~/.config/opencode and any extra dirs
-func setupOpenCode(serverURL, tmuxatlasBin string, resilient bool, extraDirs []string) error {
+func setupOpenCode(tmuxatlasBin string, resilient bool, extraDirs []string) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -464,12 +462,6 @@ func removeLegacyFile(path string) {
 
 func init() {
 	flags := []cli.Flag{
-		&cli.StringFlag{
-			Name:    "server",
-			Usage:   "TmuxAtlas server URL",
-			Sources: cli.EnvVars("TMUXATLAS_URL", "GUPPI_URL"),
-			Value:   "http://localhost:7654",
-		},
 		&cli.BoolFlag{
 			Name:  "dry-run",
 			Usage: "show what would be configured without making changes",
@@ -488,7 +480,7 @@ func init() {
 		Name:  "agent-setup",
 		Usage: "configure AI agent hooks to notify TmuxAtlas",
 		Description: `Detects installed AI coding tools and configures their hooks
-to send status notifications to the TmuxAtlas server.
+to send status notifications through the local TmuxAtlas Unix socket.
 
 Supported agents:
   - Claude Code (claude)

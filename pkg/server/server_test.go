@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -39,7 +40,7 @@ func TestHTTPOriginDoesNotTouchLegacyTLSFiles(t *testing.T) {
 	go func() {
 		result <- Run(ctx, &Options{
 			ListenAddress:   address,
-			PublicURL:       "http://localhost:7654",
+			PublicURL:       "http://" + address,
 			SocketPath:      filepath.Join(tempDir, "tmuxatlas.sock"),
 			Client:          tmuxClient,
 			StateMgr:        state.NewManager(tmuxClient),
@@ -82,5 +83,78 @@ func TestHTTPOriginDoesNotTouchLegacyTLSFiles(t *testing.T) {
 		if string(data) != "legacy-sentinel" {
 			t.Fatalf("legacy TLS file %s was modified", name)
 		}
+	}
+}
+
+func TestPublicOriginDoesNotExposeLocalToolEventIngest(t *testing.T) {
+	tempDir, err := os.MkdirTemp("/tmp", "tmuxatlas-router-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+
+	tracker := toolevents.NewTracker()
+	tmuxClient := &tmux.Client{}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, &Options{
+			ListenAddress:   address,
+			PublicURL:       "http://" + address,
+			SocketPath:      filepath.Join(tempDir, "tmuxatlas.sock"),
+			Client:          tmuxClient,
+			StateMgr:        state.NewManager(tmuxClient),
+			Tracker:         tracker,
+			ActivityTracker: activity.NewTracker(),
+		})
+	}()
+	defer func() {
+		cancel()
+		<-result
+	}()
+
+	var response *http.Response
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		response, err = http.Post("http://"+address+"/api/tool-event", "application/json",
+			bytes.NewBufferString(`{"tool":"codex","status":"waiting","session":"public"}`))
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("public tool-event status = %d, want 405", response.StatusCode)
+	}
+	if events := tracker.GetForSession("public"); len(events) != 0 {
+		t.Fatalf("public request recorded %d events", len(events))
+	}
+
+	unixClient := &http.Client{Transport: &http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			return net.Dial("unix", filepath.Join(tempDir, "tmuxatlas.sock"))
+		},
+	}}
+	response, err = unixClient.Post("http://localhost/api/tool-event", "application/json",
+		bytes.NewBufferString(`{"tool":"codex","status":"waiting","session":"local"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("local tool-event status = %d, want 204", response.StatusCode)
+	}
+	if events := tracker.GetForSession("local"); len(events) != 1 {
+		t.Fatalf("local request recorded %d events, want 1", len(events))
 	}
 }

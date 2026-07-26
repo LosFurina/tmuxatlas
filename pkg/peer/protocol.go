@@ -13,6 +13,8 @@ import (
 const (
 	// MsgAuth is the challenge-response auth message
 	MsgAuth = "auth"
+	// MsgHello starts authenticated runtime protocol negotiation.
+	MsgHello = "runtime-hello"
 	// MsgStateUpdate is a full session state snapshot
 	MsgStateUpdate = "state-update"
 	// MsgStateEvent is an incremental state change
@@ -33,6 +35,13 @@ const (
 	MsgAuthOK = "auth-ok"
 	// MsgAuthFail indicates failed authentication
 	MsgAuthFail = "auth-fail"
+	// MsgHelloAck completes runtime protocol negotiation.
+	MsgHelloAck = "runtime-hello-ack"
+	// MsgRuntimeError reports a structured negotiation or request failure.
+	MsgRuntimeError   = "runtime-error"
+	MsgRuntimeRequest = "runtime-request"
+	MsgRuntimeAck     = "runtime-ack"
+	MsgRuntimeResult  = "runtime-result"
 	// MsgPeerState is aggregated state from all other peers
 	MsgPeerState = "peer-state"
 	// MsgPeerConnected notifies that a new peer joined
@@ -41,12 +50,6 @@ const (
 	MsgPeerDisconnected = "peer-disconnected"
 	// MsgPTYOpen requests the peer to spawn a PTY
 	MsgPTYOpen = "pty-open"
-	// MsgPTYClose requests the peer to close a PTY
-	MsgPTYClose = "pty-close"
-	// MsgPTYResize requests the peer to resize a PTY
-	MsgPTYResize = "pty-resize"
-	// MsgSessionAction forwards an API action to the peer
-	MsgSessionAction = "session-action"
 	// MsgRequestState asks the peer for a full state refresh
 	MsgRequestState = "request-state"
 )
@@ -102,15 +105,19 @@ type PeerStatePayload struct {
 
 // HostInfo represents a peer's state as seen by the hub
 type HostInfo struct {
-	ID       string                 `json:"id"` // public key fingerprint
-	Name     string                 `json:"name"`
-	Version  string                 `json:"version,omitempty"`
-	Local    bool                   `json:"local,omitempty"`
-	Online   bool                   `json:"online"`
-	Sessions []*tmux.Session        `json:"sessions"`
-	Activity []*activity.Snapshot   `json:"activity,omitempty"`
-	Stats    map[string]interface{} `json:"stats,omitempty"`
-	LastSeen time.Time              `json:"last_seen"`
+	ID              string                 `json:"id"` // public key fingerprint
+	Name            string                 `json:"name"`
+	Version         string                 `json:"version,omitempty"`
+	RuntimeProtocol uint16                 `json:"runtime_protocol,omitempty"`
+	Generation      uint64                 `json:"generation,omitempty"`
+	Capabilities    []string               `json:"capabilities,omitempty"`
+	AgentInstance   string                 `json:"agent_instance,omitempty"`
+	Local           bool                   `json:"local,omitempty"`
+	Online          bool                   `json:"online"`
+	Sessions        []*tmux.Session        `json:"sessions"`
+	Activity        []*activity.Snapshot   `json:"activity,omitempty"`
+	Stats           map[string]interface{} `json:"stats,omitempty"`
+	LastSeen        time.Time              `json:"last_seen"`
 }
 
 // PeerNotifyPayload is sent when a peer connects or disconnects
@@ -121,28 +128,12 @@ type PeerNotifyPayload struct {
 
 // PTYOpenPayload requests a peer to spawn a PTY session
 type PTYOpenPayload struct {
-	StreamID string `json:"stream_id"`
-	Session  string `json:"session"`
-	Cols     uint16 `json:"cols"`
-	Rows     uint16 `json:"rows"`
-}
-
-// PTYClosePayload requests a peer to close a PTY session
-type PTYClosePayload struct {
-	StreamID string `json:"stream_id"`
-}
-
-// PTYResizePayload requests a peer to resize a PTY session
-type PTYResizePayload struct {
-	StreamID string `json:"stream_id"`
-	Cols     uint16 `json:"cols"`
-	Rows     uint16 `json:"rows"`
-}
-
-// SessionActionPayload forwards a session API action to a peer
-type SessionActionPayload struct {
-	Action string          `json:"action"` // new, rename, select-window
-	Params json.RawMessage `json:"params"`
+	StreamID    string        `json:"stream_id"`
+	AttachToken string        `json:"attach_token"`
+	Generation  uint64        `json:"generation"`
+	Target      SessionTarget `json:"target"`
+	Cols        uint16        `json:"cols"`
+	Rows        uint16        `json:"rows"`
 }
 
 // NewMessage creates a Message with a typed payload

@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 
+	"github.com/LosFurina/tmuxatlas/pkg/common"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
@@ -25,21 +27,25 @@ var wsUpgrader = websocket.Upgrader{
 
 // Handler handles incoming peer WebSocket connections (hub side)
 type Handler struct {
-	manager   *Manager
-	peerStore *identity.PeerStore
-	tracker   *toolevents.Tracker
-	pairing   *identity.PairingManager
-	ptyRelay  *PTYRelay
+	manager          *Manager
+	peerStore        *identity.PeerStore
+	tracker          *toolevents.Tracker
+	pairing          *identity.PairingManager
+	ptyRelay         *PTYRelay
+	publicURL        string
+	handshakeTimeout time.Duration
 }
 
 // NewHandler creates a new peer connection handler
-func NewHandler(manager *Manager, peerStore *identity.PeerStore, tracker *toolevents.Tracker, pairing *identity.PairingManager, ptyRelay *PTYRelay) *Handler {
+func NewHandler(manager *Manager, peerStore *identity.PeerStore, tracker *toolevents.Tracker, pairing *identity.PairingManager, ptyRelay *PTYRelay, publicURL string) *Handler {
 	return &Handler{
-		manager:   manager,
-		peerStore: peerStore,
-		tracker:   tracker,
-		pairing:   pairing,
-		ptyRelay:  ptyRelay,
+		manager:          manager,
+		peerStore:        peerStore,
+		tracker:          tracker,
+		pairing:          pairing,
+		ptyRelay:         ptyRelay,
+		publicURL:        publicURL,
+		handshakeTimeout: 10 * time.Second,
 	}
 }
 
@@ -51,6 +57,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	conn.SetReadLimit(256 << 10)
 
 	log := logrus.WithField("remote", r.RemoteAddr)
 
@@ -71,7 +78,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: Read auth response
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(h.handshakeTimeout))
 	var authMsg Message
 	if err := conn.ReadJSON(&authMsg); err != nil {
 		log.WithError(err).Debug("failed to read auth")
@@ -97,7 +104,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sig, err := base64.StdEncoding.DecodeString(authPayload.Signature)
+	sig, err := identity.ParseSignature(authPayload.Signature)
 	if err != nil {
 		sendAuthFail(conn, "invalid signature encoding")
 		return
@@ -118,6 +125,33 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 	log = log.WithFields(logrus.Fields{"peer": peer.Name, "id": peerID})
 	log.Info("peer authenticated")
 
+	// Runtime protocol negotiation is mandatory after identity authentication.
+	conn.SetReadDeadline(time.Now().Add(h.handshakeTimeout))
+	var helloMessage Message
+	if err := conn.ReadJSON(&helloMessage); err != nil {
+		sendRuntimeFailure(conn, ErrorProtocolIncompatible, "runtime hello required")
+		return
+	}
+	if helloMessage.Type != MsgHello {
+		sendRuntimeFailure(conn, ErrorProtocolIncompatible, "runtime hello required before activation")
+		return
+	}
+	var hello HelloPayload
+	if err := json.Unmarshal(helloMessage.Payload, &hello); err != nil {
+		sendRuntimeFailure(conn, ErrorProtocolIncompatible, "invalid runtime hello")
+		return
+	}
+	generation := h.manager.ReserveGeneration(peerID)
+	helloAck, err := NegotiateHello(hello, generation, common.VERSION)
+	if err != nil {
+		sendRuntimeFailure(conn, ErrorProtocolIncompatible, "no compatible runtime protocol")
+		return
+	}
+	ackMessage, _ := NewMessage(MsgHelloAck, helloAck)
+	if err := conn.WriteJSON(ackMessage); err != nil {
+		return
+	}
+
 	// Configure ping/pong for connection liveness
 	conn.SetPingHandler(func(data string) error {
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -125,28 +159,25 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 	})
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-	// Register peer
-	peerConn := &PeerConnection{
-		HostID: peerID,
-		Send:   make(chan *Message, 64),
+	peerConn := newPeerConnection(
+		r.Context(), peerID, generation, helloAck.Capabilities, hello.AgentInstanceID, 64,
+		func(message *Message) error { return conn.WriteJSON(message) },
+		conn.Close,
+	)
+	if !h.manager.ActivateAuthorizedPeer(peerID, peer.Name, authPayload.PublicKey, peerConn) {
+		sendRuntimeFailure(conn, ErrorStaleGeneration, "newer connection already active")
+		return
 	}
-	h.manager.RegisterPeer(peerID, peer.Name, authPayload.PublicKey, peerConn)
-	defer h.manager.UnregisterPeer(peerID)
+	h.manager.UpdatePeerVersion(peerID, hello.BuildVersion)
+	defer func() {
+		h.manager.UnregisterPeerGeneration(peerID, generation)
+		peerConn.Close()
+		peerConn.Wait()
+	}()
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	// Send current aggregated state to the new peer
-	h.sendPeerState(peerConn, conn)
-
-	// Start write goroutine
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for msg := range peerConn.Send {
-			if err := conn.WriteJSON(msg); err != nil {
-				log.WithError(err).Debug("failed to write to peer")
-				return
-			}
-		}
-	}()
+	h.sendPeerState(peerConn)
 
 	// Subscribe to state changes and forward to this peer
 	stateCh := h.manager.Subscribe()
@@ -164,10 +195,7 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			select {
-			case peerConn.Send <- msg:
-			default:
-			}
+			_ = peerConn.Send(context.Background(), msg)
 		}
 	}()
 
@@ -181,17 +209,34 @@ func (h *Handler) HandlePeer(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		h.handlePeerMessage(peerID, &msg, log)
+		h.handlePeerMessage(peerID, peerConn, &msg, log)
 	}
 
-	close(peerConn.Send)
-	<-done
 	log.Info("peer disconnected")
 }
 
 // handlePeerMessage dispatches a message from a connected peer
-func (h *Handler) handlePeerMessage(peerID string, msg *Message, log *logrus.Entry) {
+func (h *Handler) handlePeerMessage(peerID string, connection *PeerConnection, msg *Message, log *logrus.Entry) {
+	if !h.manager.IsCurrent(connection) {
+		log.WithField("generation", connection.Generation).Debug("ignoring message from stale generation")
+		return
+	}
 	switch msg.Type {
+	case MsgRuntimeAck:
+		var ack RuntimeAck
+		if json.Unmarshal(msg.Payload, &ack) == nil {
+			connection.requests.Accept(ack)
+		}
+	case MsgRuntimeResult:
+		var result RuntimeResult
+		if json.Unmarshal(msg.Payload, &result) == nil {
+			connection.requests.CompleteResult(result)
+		}
+	case MsgRuntimeError:
+		var runtimeError RuntimeError
+		if json.Unmarshal(msg.Payload, &runtimeError) == nil && runtimeError.RequestID != "" {
+			connection.requests.CompleteError(runtimeError)
+		}
 	case MsgStateUpdate:
 		var payload StateUpdatePayload
 		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
@@ -255,14 +300,14 @@ func (h *Handler) handlePeerMessage(peerID string, msg *Message, log *logrus.Ent
 }
 
 // sendPeerState sends the full aggregated state to a peer
-func (h *Handler) sendPeerState(peerConn *PeerConnection, conn *websocket.Conn) {
+func (h *Handler) sendPeerState(peerConn *PeerConnection) {
 	msg, err := NewMessage(MsgPeerState, PeerStatePayload{
 		Hosts: h.manager.GetHosts(),
 	})
 	if err != nil {
 		return
 	}
-	conn.WriteJSON(msg)
+	_ = peerConn.Send(context.Background(), msg)
 }
 
 // getPeerSessions returns the current sessions for a peer (from cache)
@@ -281,32 +326,33 @@ func (h *Handler) HandlePairing(w http.ResponseWriter, r *http.Request) {
 		Code      string `json:"code"`
 		Name      string `json:"name"`
 		PublicKey string `json:"public_key"`
+		Version   int    `json:"version"`
+		Signature string `json:"signature"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Code == "" || req.Name == "" || req.PublicKey == "" {
-		http.Error(w, "missing required fields: code, name, public_key", http.StatusBadRequest)
+	name, nameErr := identity.NormalizeName(req.Name)
+	publicKey, keyErr := identity.ParsePublicKey(req.PublicKey)
+	signature, signatureErr := identity.ParseSignature(req.Signature)
+	transcript := identity.PairingTranscript(h.publicURL, req.Code, name, req.PublicKey)
+	if req.Version != identity.PairingVersion || req.Code == "" || nameErr != nil || keyErr != nil ||
+		signatureErr != nil || !identity.Verify(req.PublicKey, transcript, signature) || len(publicKey) == 0 {
+		http.Error(w, "pairing failed", http.StatusUnauthorized)
 		return
 	}
 
 	log := logrus.WithField("remote", r.RemoteAddr)
 
-	if !h.pairing.Validate(req.Code) {
-		http.Error(w, "invalid or expired pairing code", http.StatusUnauthorized)
-		return
-	}
-
-	// Store the peer
-	if err := h.peerStore.Add(identity.Peer{
-		Name:      req.Name,
-		PublicKey: req.PublicKey,
-		PairedAt:  time.Now(),
+	if err := h.pairing.Complete(req.Code, func() error {
+		return h.peerStore.Add(identity.Peer{
+			Name: name, PublicKey: req.PublicKey, PairedAt: time.Now(),
+		})
 	}); err != nil {
-		log.WithError(err).Error("failed to store peer")
-		http.Error(w, "failed to store peer", http.StatusInternalServerError)
+		log.WithField("result", "rejected").Warn("pairing completion rejected")
+		http.Error(w, "pairing failed", http.StatusUnauthorized)
 		return
 	}
 
@@ -319,10 +365,15 @@ func (h *Handler) HandlePairing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 
-	log.WithField("peer", req.Name).Info("peer paired successfully")
+	log.WithField("peer", name).Info("peer paired successfully")
 }
 
 func sendAuthFail(conn *websocket.Conn, reason string) {
 	msg, _ := NewMessage(MsgAuthFail, map[string]string{"reason": reason})
 	conn.WriteJSON(msg)
+}
+
+func sendRuntimeFailure(conn *websocket.Conn, code ErrorCode, reason string) {
+	msg, _ := NewMessage(MsgRuntimeError, RuntimeError{Code: code, Message: reason})
+	_ = conn.WriteJSON(msg)
 }

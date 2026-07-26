@@ -15,6 +15,7 @@ import (
 type PushPayload struct {
 	Title   string `json:"title"`
 	Body    string `json:"body"`
+	Host    string `json:"host"`
 	Session string `json:"session"`
 	Window  int    `json:"window,omitempty"`
 	Tool    string `json:"tool"`
@@ -84,6 +85,7 @@ func (s *Sender) sendAll(evt *toolevents.Event) {
 	payload := PushPayload{
 		Title:   title,
 		Body:    body,
+		Host:    evt.Host,
 		Session: evt.Session,
 		Window:  evt.Window,
 		Tool:    string(evt.Tool),

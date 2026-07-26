@@ -3,6 +3,7 @@ package pair
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -118,6 +119,15 @@ func pairWithHub(hubAddr, code string) error {
 		"name":       id.Name,
 		"public_key": id.PublicKey,
 	})
+	signature, err := id.Sign(identity.PairingTranscript(hubBaseURL, code, id.Name, id.PublicKey))
+	if err != nil {
+		return fmt.Errorf("sign pairing proof: %w", err)
+	}
+	var request map[string]any
+	_ = json.Unmarshal(reqBody, &request)
+	request["version"] = identity.PairingVersion
+	request["signature"] = base64.StdEncoding.EncodeToString(signature)
+	reqBody, _ = json.Marshal(request)
 
 	client := newPairHTTPClient()
 

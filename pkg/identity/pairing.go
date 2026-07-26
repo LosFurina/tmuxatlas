@@ -1,98 +1,113 @@
 package identity
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	// PairingCodeTTL is how long a pairing code is valid
-	PairingCodeTTL = 5 * time.Minute
+	PairingCodeTTL    = 5 * time.Minute
+	MaxPendingPairing = 32
+	PairingVersion    = 1
 )
 
-// wordlist for generating human-readable pairing codes
-var words = []string{
-	"alpha", "amber", "arrow", "atlas", "azure",
-	"blaze", "bloom", "brave", "brook", "cedar",
-	"chase", "cloud", "coral", "crane", "delta",
-	"drift", "eagle", "ember", "fable", "flame",
-	"frost", "ghost", "gleam", "grace", "haven",
-	"ivory", "jewel", "karma", "lemon", "lunar",
-	"maple", "marsh", "noble", "ocean", "olive",
-	"pearl", "pilot", "plume", "prism", "quake",
-	"raven", "ridge", "river", "robin", "scout",
-	"shade", "sigma", "solar", "spark", "steel",
-	"storm", "swift", "thorn", "tiger", "titan",
-	"torch", "trail", "vapor", "vivid", "whale",
-	"winter", "zephyr",
+var pairingSyllables = [...]string{
+	"ba", "be", "bi", "bo", "da", "de", "di", "do",
+	"ka", "ke", "ki", "ko", "la", "le", "li", "lo",
 }
 
-// PairingCode represents a pending pairing request
 type PairingCode struct {
 	Code      string
 	ExpiresAt time.Time
 }
 
-// PairingManager manages active pairing codes
 type PairingManager struct {
 	mu    sync.Mutex
 	codes map[string]*PairingCode
+	rand  io.Reader
+	now   func() time.Time
+	max   int
 }
 
-// NewPairingManager creates a new pairing manager
 func NewPairingManager() *PairingManager {
-	return &PairingManager{
-		codes: make(map[string]*PairingCode),
-	}
+	return newPairingManager(rand.Reader, time.Now, MaxPendingPairing)
 }
 
-// Generate creates a new pairing code (3 random words)
+func newPairingManager(random io.Reader, now func() time.Time, maxPending int) *PairingManager {
+	return &PairingManager{codes: make(map[string]*PairingCode), rand: random, now: now, max: maxPending}
+}
+
+// Generate samples six independent bytes. Each byte maps one-to-one onto a
+// 256-entry generated word vocabulary, providing exactly 48 bits without
+// modulo bias.
 func (pm *PairingManager) Generate() (*PairingCode, error) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-
-	// Clean up expired codes
-	now := time.Now()
-	for code, pc := range pm.codes {
-		if now.After(pc.ExpiresAt) {
-			delete(pm.codes, code)
-		}
+	now := pm.now()
+	pm.cleanupLocked(now)
+	if len(pm.codes) >= pm.max {
+		return nil, fmt.Errorf("pending pairing code capacity reached")
 	}
-
-	parts := make([]string, 3)
-	for i := range parts {
-		b := make([]byte, 1)
-		if _, err := rand.Read(b); err != nil {
-			return nil, fmt.Errorf("generate random: %w", err)
-		}
-		parts[i] = words[int(b[0])%len(words)]
+	random := make([]byte, 6)
+	if _, err := io.ReadFull(pm.rand, random); err != nil {
+		return nil, fmt.Errorf("generate random: %w", err)
+	}
+	parts := make([]string, len(random))
+	for i, value := range random {
+		parts[i] = pairingSyllables[value>>4] + pairingSyllables[value&0x0f]
 	}
 	code := strings.ToUpper(strings.Join(parts, "-"))
-
-	pc := &PairingCode{
-		Code:      code,
-		ExpiresAt: time.Now().Add(PairingCodeTTL),
-	}
+	pc := &PairingCode{Code: code, ExpiresAt: now.Add(PairingCodeTTL)}
 	pm.codes[code] = pc
 	return pc, nil
 }
 
-// Validate checks if a pairing code is valid and consumes it (one-time use)
-func (pm *PairingManager) Validate(code string) bool {
+// Complete runs commit while holding the code lock and consumes the one-time
+// code only after the entire persistence operation succeeds.
+func (pm *PairingManager) Complete(code string, commit func() error) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
-
-	code = strings.ToUpper(strings.TrimSpace(code))
+	code = NormalizePairingCode(code)
 	pc, ok := pm.codes[code]
-	if !ok {
-		return false
+	if !ok || !pm.now().Before(pc.ExpiresAt) {
+		if ok {
+			delete(pm.codes, code)
+		}
+		return fmt.Errorf("pairing failed")
 	}
-
-	// Remove immediately (one-time use)
+	if err := commit(); err != nil {
+		return fmt.Errorf("pairing failed")
+	}
 	delete(pm.codes, code)
+	return nil
+}
 
-	return time.Now().Before(pc.ExpiresAt)
+func (pm *PairingManager) cleanupLocked(now time.Time) {
+	for code, pc := range pm.codes {
+		if !now.Before(pc.ExpiresAt) {
+			delete(pm.codes, code)
+		}
+	}
+}
+
+func NormalizePairingCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+// PairingTranscript creates an unambiguous versioned proof payload.
+func PairingTranscript(origin, code, name, publicKey string) []byte {
+	var transcript bytes.Buffer
+	transcript.WriteString("tmuxatlas/pairing-proof\x00")
+	_ = binary.Write(&transcript, binary.BigEndian, uint16(PairingVersion))
+	for _, value := range []string{origin, NormalizePairingCode(code), name, publicKey} {
+		_ = binary.Write(&transcript, binary.BigEndian, uint32(len(value)))
+		transcript.WriteString(value)
+	}
+	return transcript.Bytes()
 }

@@ -85,7 +85,7 @@ const clipboardProvider: IClipboardProvider = {
   },
 }
 
-export function useTerminal(sessionName: string, hostId?: string) {
+export function useTerminal(sessionName: string, hostId: string) {
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -227,8 +227,8 @@ export function useTerminal(sessionName: string, hostId?: string) {
 
     // Connect WebSocket for this session
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const hostParam = hostId ? `&host=${encodeURIComponent(hostId)}` : ''
-    const wsUrl = `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}${hostParam}`
+    if (!hostId) throw new Error('terminal target is missing host identity')
+    const wsUrl = `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}&host=${encodeURIComponent(hostId)}`
     const ws = new WebSocket(wsUrl)
     ws.binaryType = 'arraybuffer'
     wsRef.current = ws

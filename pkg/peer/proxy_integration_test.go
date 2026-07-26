@@ -36,12 +36,7 @@ func TestPeerFlowsThroughReverseProxy(t *testing.T) {
 	pairing := identity.NewPairingManager()
 	relay := NewPTYRelay()
 	manager := NewManager(hubIdentity, peerStore, nil)
-	handler := NewHandler(manager, peerStore, toolevents.NewTracker(), pairing, relay)
-
 	backendMux := http.NewServeMux()
-	backendMux.HandleFunc("/api/pair/complete", handler.HandlePairing)
-	backendMux.HandleFunc("/ws/peer", handler.HandlePeer)
-	backendMux.HandleFunc("/ws/peer-pty", relay.HandlePeerPTY)
 	backend := httptest.NewServer(backendMux)
 	defer backend.Close()
 
@@ -51,15 +46,27 @@ func TestPeerFlowsThroughReverseProxy(t *testing.T) {
 	}
 	proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(backendURL))
 	defer proxy.Close()
+	handler := NewHandler(manager, peerStore, toolevents.NewTracker(), pairing, relay, proxy.URL)
+	backendMux.HandleFunc("/api/pair/complete", handler.HandlePairing)
+	backendMux.HandleFunc("/ws/peer", handler.HandlePeer)
+	backendMux.HandleFunc("/ws/peer-pty", relay.HandlePeerPTY)
 
 	code, err := pairing.Generate()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pairBody, err := json.Marshal(map[string]string{
+	proof, err := remoteIdentity.Sign(identity.PairingTranscript(
+		proxy.URL, code.Code, remoteIdentity.Name, remoteIdentity.PublicKey,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairBody, err := json.Marshal(map[string]any{
 		"code":       code.Code,
 		"name":       remoteIdentity.Name,
 		"public_key": remoteIdentity.PublicKey,
+		"version":    identity.PairingVersion,
+		"signature":  base64.StdEncoding.EncodeToString(proof),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,22 +129,50 @@ func TestPeerFlowsThroughReverseProxy(t *testing.T) {
 	if authResult.Type != MsgAuthOK {
 		t.Fatalf("authentication result = %q, want %q", authResult.Type, MsgAuthOK)
 	}
+	hello, err := NewMessage(MsgHello, HelloPayload{
+		MinVersion: RuntimeProtocolMin, MaxVersion: RuntimeProtocolMax,
+		Capabilities: RuntimeCapabilities, BuildVersion: "test",
+		AgentInstanceID: "proxy-test-instance",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := control.WriteJSON(hello); err != nil {
+		t.Fatal(err)
+	}
+	var helloAck Message
+	if err := control.ReadJSON(&helloAck); err != nil {
+		t.Fatal(err)
+	}
+	if helloAck.Type != MsgHelloAck {
+		t.Fatalf("runtime negotiation result = %q, want %q", helloAck.Type, MsgHelloAck)
+	}
 	if err := control.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	pending := relay.RegisterPending("proxy-stream", remoteIdentity.Fingerprint(), nil)
-	ptyClient, _, err := websocket.DefaultDialer.Dial(proxyWS+"/ws/peer-pty?stream=proxy-stream", nil)
+	dataOwnerConnection := newPeerConnection(
+		t.Context(), remoteIdentity.Fingerprint(), 7, []string{CapabilityPTYControl},
+		"proxy-test-instance", 1, func(*Message) error { return nil }, nil,
+	)
+	owner, err := relay.RegisterPending(dataOwnerConnection,
+		SessionTarget{HostID: remoteIdentity.Fingerprint(), Session: "proxy-session"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Teardown("test-complete")
+	dataURL := proxyWS + "/ws/peer-pty?stream=" + owner.StreamID +
+		"&host=" + owner.HostID + "&generation=7&session=proxy-session&token=" + owner.AttachToken
+	ptyClient, _, err := websocket.DefaultDialer.Dial(dataURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ptyClient.Close()
 	select {
-	case ptyServer := <-pending.Ready:
-		if ptyServer == nil {
+	case <-owner.Ready():
+		if owner.PeerWS == nil {
 			t.Fatal("PTY relay received a nil server connection")
 		}
-		defer ptyServer.Close()
 	case <-time.After(2 * time.Second):
 		t.Fatal("PTY WebSocket did not reach the relay through the reverse proxy")
 	}

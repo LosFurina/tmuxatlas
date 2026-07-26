@@ -1,169 +1,275 @@
 package peer
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 
-// PTYRelay bridges browser WebSocket connections to peer PTY WebSocket connections
+const ptyAttachDeadline = 15 * time.Second
+
+// PTYRelay owns the pending and active data-channel index. Each stream itself
+// is owned by PTYOwner and by exactly one control connection generation.
 type PTYRelay struct {
-	mu      sync.RWMutex
-	pending map[string]*PendingStream // stream_id -> waiting for peer to connect
-	active  map[string]*ActiveBridge  // stream_id -> both sides connected
+	mu            sync.RWMutex
+	pending       map[string]*PTYOwner
+	active        map[string]*PTYOwner
+	attachTimeout time.Duration
 }
 
-// PendingStream is a browser waiting for a peer to open a PTY WebSocket
-type PendingStream struct {
-	StreamID  string
-	HostID    string
-	BrowserWS *websocket.Conn
-	Ready     chan *websocket.Conn // peer sends its WS connection here
+type PTYOwner struct {
+	StreamID    string
+	HostID      string
+	Generation  uint64
+	Target      SessionTarget
+	AttachToken string
+
+	relay      *PTYRelay
+	connection *PeerConnection
+	ctx        context.Context
+	cancel     context.CancelFunc
+	once       sync.Once
+	ready      chan struct{}
+	BrowserWS  *websocket.Conn
+
+	mu     sync.RWMutex
+	PeerWS *websocket.Conn
+	wg     sync.WaitGroup
 }
 
-// ActiveBridge is an active PTY relay between browser and peer
-type ActiveBridge struct {
-	StreamID  string
-	BrowserWS *websocket.Conn
-	PeerWS    *websocket.Conn
-}
-
-// NewPTYRelay creates a new PTY relay
 func NewPTYRelay() *PTYRelay {
 	return &PTYRelay{
-		pending: make(map[string]*PendingStream),
-		active:  make(map[string]*ActiveBridge),
+		pending:       make(map[string]*PTYOwner),
+		active:        make(map[string]*PTYOwner),
+		attachTimeout: ptyAttachDeadline,
 	}
 }
 
-// GenerateStreamID creates a random stream ID
 func GenerateStreamID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return randomPTYSecret()
 }
 
-// RegisterPending registers a browser connection waiting for a peer PTY
-func (r *PTYRelay) RegisterPending(streamID, hostID string, browserWS *websocket.Conn) *PendingStream {
-	ps := &PendingStream{
-		StreamID:  streamID,
-		HostID:    hostID,
-		BrowserWS: browserWS,
-		Ready:     make(chan *websocket.Conn, 1),
+func randomPTYSecret() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic("system random source unavailable: " + err.Error())
 	}
-
-	r.mu.Lock()
-	r.pending[streamID] = ps
-	r.mu.Unlock()
-
-	return ps
+	return hex.EncodeToString(value)
 }
 
-// CompletePending is called when a peer connects its PTY WebSocket for a stream
-func (r *PTYRelay) CompletePending(streamID string, peerWS *websocket.Conn) bool {
-	r.mu.Lock()
-	ps, ok := r.pending[streamID]
-	if ok {
-		delete(r.pending, streamID)
-		r.active[streamID] = &ActiveBridge{
-			StreamID:  streamID,
-			BrowserWS: ps.BrowserWS,
-			PeerWS:    peerWS,
+func (relay *PTYRelay) RegisterPending(connection *PeerConnection, target SessionTarget, browserWS *websocket.Conn) (*PTYOwner, error) {
+	if connection == nil {
+		return nil, ErrPeerOffline
+	}
+	ctx, cancel := context.WithCancel(connection.ctx)
+	owner := &PTYOwner{
+		StreamID: randomPTYSecret(), HostID: connection.HostID, Generation: connection.Generation,
+		Target: target, AttachToken: randomPTYSecret(), relay: relay, connection: connection,
+		ctx: ctx, cancel: cancel, ready: make(chan struct{}), BrowserWS: browserWS,
+	}
+	if err := connection.ownPTY(owner); err != nil {
+		cancel()
+		return nil, err
+	}
+	relay.mu.Lock()
+	relay.pending[owner.StreamID] = owner
+	relay.mu.Unlock()
+	time.AfterFunc(relay.attachTimeout, func() {
+		select {
+		case <-owner.ready:
+		default:
+			owner.Teardown("attach-timeout")
 		}
-	}
-	r.mu.Unlock()
-
-	if ok {
-		ps.Ready <- peerWS
-		return true
-	}
-	return false
+	})
+	return owner, nil
 }
 
-// Remove removes a stream from tracking
-func (r *PTYRelay) Remove(streamID string) {
-	r.mu.Lock()
-	delete(r.pending, streamID)
-	delete(r.active, streamID)
-	r.mu.Unlock()
+func (relay *PTYRelay) CompletePending(streamID, hostID string, generation uint64, token, session string, peerWS *websocket.Conn) bool {
+	relay.mu.Lock()
+	owner := relay.pending[streamID]
+	if owner == nil || owner.HostID != hostID || owner.Generation != generation ||
+		owner.AttachToken != token || owner.Target.Session != session {
+		relay.mu.Unlock()
+		return false
+	}
+	delete(relay.pending, streamID)
+	relay.active[streamID] = owner
+	owner.mu.Lock()
+	owner.PeerWS = peerWS
+	owner.mu.Unlock()
+	close(owner.ready)
+	relay.mu.Unlock()
+	return true
 }
 
-// HandlePeerPTY handles the /ws/peer-pty endpoint where peers connect their PTY WebSocket
-func (r *PTYRelay) HandlePeerPTY(w http.ResponseWriter, req *http.Request) {
-	streamID := req.URL.Query().Get("stream")
-	if streamID == "" {
-		http.Error(w, "missing stream ID", http.StatusBadRequest)
+func (owner *PTYOwner) Ready() <-chan struct{} {
+	return owner.ready
+}
+
+func (owner *PTYOwner) Teardown(reason string) {
+	owner.once.Do(func() {
+		owner.cancel()
+		owner.relay.mu.Lock()
+		delete(owner.relay.pending, owner.StreamID)
+		delete(owner.relay.active, owner.StreamID)
+		owner.relay.mu.Unlock()
+		owner.connection.releasePTY(owner.StreamID)
+		if owner.BrowserWS != nil {
+			_ = owner.BrowserWS.Close()
+		}
+		owner.mu.RLock()
+		peerWS := owner.PeerWS
+		owner.mu.RUnlock()
+		if peerWS != nil {
+			control, _ := EncodePTYControlFrame(PTYControlFrame{
+				Version: PTYFrameVersion, Type: "close", Sequence: 1, Reason: reason,
+			})
+			_ = peerWS.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, string(control)),
+				time.Now().Add(time.Second))
+			_ = peerWS.Close()
+		}
+	})
+}
+
+func (owner *PTYOwner) Wait() {
+	owner.wg.Wait()
+}
+
+func (relay *PTYRelay) HandlePeerPTY(w http.ResponseWriter, request *http.Request) {
+	streamID := request.URL.Query().Get("stream")
+	hostID := request.URL.Query().Get("host")
+	token := request.URL.Query().Get("token")
+	session := request.URL.Query().Get("session")
+	generation, err := strconv.ParseUint(request.URL.Query().Get("generation"), 10, 64)
+	if streamID == "" || hostID == "" || token == "" || session == "" || err != nil || generation == 0 {
+		http.Error(w, "invalid PTY attachment identity", http.StatusBadRequest)
 		return
 	}
-
-	conn, err := wsUpgrader.Upgrade(w, req, nil)
+	conn, err := wsUpgrader.Upgrade(w, request, nil)
 	if err != nil {
-		logrus.WithError(err).Warn("peer-pty ws upgrade failed")
 		return
 	}
-
-	log := logrus.WithField("stream", streamID)
-
-	if !r.CompletePending(streamID, conn) {
-		log.Warn("no pending stream for peer PTY connection")
-		conn.Close()
+	conn.SetReadLimit(maxPTYFrameData + ptyDataHeaderSize)
+	if !relay.CompletePending(streamID, hostID, generation, token, session, conn) {
+		logrus.WithField("stream", streamID).Warn("rejected unmatched or late PTY attachment")
+		_ = conn.Close()
 		return
 	}
-
-	log.Debug("peer PTY connection established, relay is handled by the session handler")
-	// The actual relay is driven by HandleRemoteSession — this handler just
-	// registers the peer WS. The conn stays open; the relay goroutines in
-	// HandleRemoteSession read/write it.
 }
 
-// Bridge runs the bidirectional relay between browser and peer WebSocket connections.
-// This blocks until one side disconnects.
-func Bridge(browserWS, peerWS *websocket.Conn, streamID string) {
-	log := logrus.WithField("stream", streamID)
+// Bridge translates the browser's raw xterm messages into protocol-v1 frames.
+func (owner *PTYOwner) Bridge() {
+	owner.mu.RLock()
+	peerWS := owner.PeerWS
+	owner.mu.RUnlock()
+	if peerWS == nil || owner.BrowserWS == nil {
+		owner.Teardown("missing-endpoint")
+		return
+	}
+	browserWS := owner.BrowserWS
+	browserWS.SetReadLimit(maxPTYFrameData)
+	peerWS.SetReadLimit(maxPTYFrameData + ptyDataHeaderSize)
 
+	owner.wg.Add(2)
 	done := make(chan struct{}, 2)
-
-	// Peer → Browser (PTY output)
 	go func() {
+		defer owner.wg.Done()
 		defer func() { done <- struct{}{} }()
+		var outputSequence PTYSequence
 		for {
-			msgType, data, err := peerWS.ReadMessage()
+			messageType, data, err := peerWS.ReadMessage()
 			if err != nil {
 				return
 			}
-			if err := browserWS.WriteMessage(msgType, data); err != nil {
+			switch messageType {
+			case websocket.BinaryMessage:
+				frame, err := DecodePTYDataFrame(data)
+				if err != nil || frame.Direction != PTYDataOutput {
+					return
+				}
+				duplicate, err := outputSequence.Accept(frame.Sequence)
+				if err != nil {
+					return
+				}
+				if duplicate {
+					continue
+				}
+				if err := browserWS.WriteMessage(websocket.BinaryMessage, frame.Payload); err != nil {
+					return
+				}
+			case websocket.TextMessage:
+				frame, err := DecodePTYControlFrame(data)
+				if err != nil {
+					return
+				}
+				if frame.Type == "close" || frame.Type == "error" {
+					return
+				}
+			default:
 				return
 			}
 		}
 	}()
-
-	// Browser → Peer (keyboard input + resize)
 	go func() {
+		defer owner.wg.Done()
 		defer func() { done <- struct{}{} }()
+		var dataSequence, controlSequence uint64
 		for {
-			msgType, data, err := browserWS.ReadMessage()
+			messageType, data, err := browserWS.ReadMessage()
 			if err != nil {
 				return
 			}
-			if err := peerWS.WriteMessage(msgType, data); err != nil {
+			switch messageType {
+			case websocket.BinaryMessage:
+				dataSequence++
+				frame, err := EncodePTYDataFrame(PTYDataInput, dataSequence, data)
+				if err != nil || peerWS.WriteMessage(websocket.BinaryMessage, frame) != nil {
+					return
+				}
+			case websocket.TextMessage:
+				var browserResize struct {
+					Type string `json:"type"`
+					Cols uint16 `json:"cols"`
+					Rows uint16 `json:"rows"`
+				}
+				if err := jsonUnmarshalStrict(data, &browserResize); err != nil ||
+					browserResize.Type != "resize" || browserResize.Cols == 0 || browserResize.Rows == 0 {
+					return
+				}
+				controlSequence++
+				frame, err := EncodePTYControlFrame(PTYControlFrame{
+					Version: PTYFrameVersion, Type: "resize", Sequence: controlSequence,
+					Cols: browserResize.Cols, Rows: browserResize.Rows,
+				})
+				if err != nil || peerWS.WriteMessage(websocket.TextMessage, frame) != nil {
+					return
+				}
+			default:
 				return
 			}
 		}
 	}()
-
-	// Wait for either side to finish
 	<-done
+	owner.Teardown("stream-ended")
+	owner.Wait()
+	logrus.WithField("stream", owner.StreamID).Debug("PTY relay bridge closed")
+}
 
-	// Close both sides
-	browserWS.Close()
-	peerWS.Close()
-
-	// Wait for the other goroutine
-	<-done
-
-	log.Debug("PTY relay bridge closed")
+func jsonUnmarshalStrict(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	return ensureJSONEOF(decoder)
 }

@@ -25,7 +25,7 @@ export interface Window {
 export interface Session {
   id: string
   name: string
-  host?: string        // peer fingerprint (empty = local)
+  host: string         // immutable host fingerprint
   host_name?: string   // peer display name
   host_online?: boolean
   windows: Window[]
@@ -36,13 +36,16 @@ export interface Session {
 
 // Unique key for a session across hosts
 export function sessionKey(session: Session): string {
-  return session.host ? `${session.host}/${session.name}` : session.name
+  if (!session.host) throw new Error(`session ${session.name} is missing host identity`)
+  return `${session.host}/${session.name}`
 }
 
 // Parse a session key back into host + name
 export function parseSessionKey(key: string): { host: string; name: string } {
   const idx = key.indexOf('/')
-  if (idx === -1) return { host: '', name: key }
+  if (idx <= 0 || idx === key.length - 1) {
+    throw new Error(`invalid session key: ${key}`)
+  }
   return { host: key.substring(0, idx), name: key.substring(idx + 1) }
 }
 
