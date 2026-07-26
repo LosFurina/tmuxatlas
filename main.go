@@ -12,11 +12,13 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
 
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent-setup"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/doctor"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/install"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/notify"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/pair"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/peers"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/server"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/update"
 )
 
 func main() {

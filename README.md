@@ -44,7 +44,7 @@ The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Rele
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.2.1 \
+TMUXATLAS_VERSION=v0.3.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -74,6 +74,34 @@ tmuxatlas install --public-url https://tmuxatlas.example.com
 The install command also reads the saved value from
 `~/.config/tmuxatlas/.env`, so the flag can be omitted after using the
 interactive installer.
+
+### Update and diagnose
+
+Update an installed binary from the latest GitHub Release:
+
+```bash
+tmuxatlas update
+```
+
+The updater downloads the release archive and `checksums.txt`, verifies the
+SHA-256 checksum, and atomically replaces the currently running executable. It
+does not modify configuration, Passkeys, peer identities, or other user data,
+and it does not restart a running service. Use `tmuxatlas update --check` to
+check without installing, or `--force` to reinstall the current version.
+
+No token is needed for the public repository. If GitHub API rate limiting is a
+problem, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment.
+
+Inspect a local installation with:
+
+```bash
+tmuxatlas doctor
+```
+
+Doctor checks the executable, tmux, `.env`, public Passkey origin, session TTL,
+Passkey store and permissions, listening server, legacy password file, and
+systemd/launchd user service. Warnings are informational; failed checks produce
+a non-zero exit status.
 
 ### Download a release
 
@@ -241,6 +269,7 @@ process environment variables take precedence. Start from
 |----------|---------|-------------|
 | `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
 | `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
+| `TMUXATLAS_SESSION_TTL` | `24h` | Idle time before Passkey login is required again; accepts Go durations such as `168h` |
 | `TMUXATLAS_SOCKET` | auto | Unix socket path for local CLI |
 | `TMUXATLAS_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
 | `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
@@ -255,6 +284,7 @@ process environment variables take precedence. Start from
 tmuxatlas server [flags]
       --listen string             HTTP/WS origin listen address (default "127.0.0.1:7654")
       --public-url string         Browser-facing absolute URL (default "http://localhost:7654")
+      --session-ttl duration      Idle time before Passkey login is required again (default 24h)
       --discovery-interval int    Session discovery interval in seconds (default 2)
       --no-control-mode           Disable tmux control mode (use polling only)
       --socket string             Unix socket path (auto-detected if omitted)

@@ -219,7 +219,11 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		sessionMgr     *auth.SessionManager
 	)
 	if !c.Bool("no-auth") {
-		sessionMgr = auth.NewSessionManager(24 * time.Hour)
+		sessionTTL := c.Duration("session-ttl")
+		if sessionTTL < time.Minute {
+			return fmt.Errorf("session TTL must be at least 1 minute")
+		}
+		sessionMgr = auth.NewSessionManager(sessionTTL)
 		passkeyManager, err = auth.NewPasskeyManager(publicURL.String(), sessionMgr)
 		if err != nil {
 			return fmt.Errorf("failed to initialize auth: %w", err)
@@ -323,6 +327,12 @@ func serverFlags() []cli.Flag {
 			Usage:   "Externally reachable HTTP(S) URL; HTTPS enables Secure cookies",
 			Sources: cli.EnvVars("TMUXATLAS_PUBLIC_URL", "GUPPI_PUBLIC_URL"),
 			Value:   "http://localhost:7654",
+		},
+		&cli.DurationFlag{
+			Name:    "session-ttl",
+			Usage:   "Idle time before a browser session requires Passkey login again",
+			Sources: cli.EnvVars("TMUXATLAS_SESSION_TTL"),
+			Value:   24 * time.Hour,
 		},
 		&cli.IntFlag{
 			Name:    "discovery-interval",

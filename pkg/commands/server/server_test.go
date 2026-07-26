@@ -51,7 +51,7 @@ func TestServerFlagsUseHTTPOriginConfiguration(t *testing.T) {
 			names[name] = true
 		}
 	}
-	for _, required := range []string{"listen", "public-url"} {
+	for _, required := range []string{"listen", "public-url", "session-ttl"} {
 		if !names[required] {
 			t.Errorf("missing %q flag", required)
 		}

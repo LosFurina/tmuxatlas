@@ -69,6 +69,17 @@ or verification fails, restart TmuxAtlas to emit a fresh token. The credential
 private key stays on the authenticator; TmuxAtlas stores the public credential
 record in `~/.config/tmuxatlas/passkeys.json`.
 
+Browser sessions use a sliding idle timeout. The default is 24 hours; each
+authenticated HTTP request refreshes both the server-side session and browser
+cookie. Configure it in `~/.config/tmuxatlas/.env`, for example:
+
+```dotenv
+TMUXATLAS_SESSION_TTL=168h
+```
+
+Sessions remain in memory, so restarting TmuxAtlas always requires a fresh
+Passkey login regardless of this setting.
+
 ## Cloudflare Tunnel
 
 Create a DNS route for the tunnel, then use an ingress rule like:

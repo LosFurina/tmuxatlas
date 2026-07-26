@@ -147,8 +147,8 @@ func Run(ctx context.Context, opts *Options) error {
 			r.Post("/auth/passkey/register/finish", opts.PasskeyManager.FinishRegistrationHandler())
 			r.Post("/auth/passkey/login/begin", opts.PasskeyManager.BeginLoginHandler())
 			r.Post("/auth/passkey/login/finish", opts.PasskeyManager.FinishLoginHandler())
-			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr))
-			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr))
+			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr, opts.SecureCookies))
+			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr, opts.SecureCookies))
 		}
 
 		// Version endpoint — public, no auth required
@@ -208,7 +208,7 @@ func Run(ctx context.Context, opts *Options) error {
 		// Protected API routes
 		r.Group(func(r chi.Router) {
 			if opts.AuthEnabled {
-				r.Use(auth.Middleware(opts.SessionMgr))
+				r.Use(auth.Middleware(opts.SessionMgr, opts.SecureCookies))
 			}
 
 			// Agent status — check which agents are installed/configured
@@ -632,7 +632,7 @@ func Run(ctx context.Context, opts *Options) error {
 	ptyHandler := ws.NewPTYTerminalHandler(opts.Client.TmuxPath(), opts.ActivityTracker)
 
 	if opts.AuthEnabled {
-		authMw := auth.Middleware(opts.SessionMgr)
+		authMw := auth.Middleware(opts.SessionMgr, opts.SecureCookies)
 		r.With(authMw).Get("/ws/events", hub.HandleEvents)
 		r.With(authMw).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			// Route remote sessions through PTY relay

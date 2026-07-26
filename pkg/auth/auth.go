@@ -21,6 +21,10 @@ func NewSessionManager(ttl time.Duration) *SessionManager {
 	return &SessionManager{sessions: make(map[string]time.Time), ttl: ttl}
 }
 
+func (sm *SessionManager) TTL() time.Duration {
+	return sm.ttl
+}
+
 func (sm *SessionManager) Create() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -75,7 +79,7 @@ func isUnixSocket(r *http.Request) bool {
 
 // Middleware enforces a browser session. Local CLI requests over the Unix
 // socket remain trusted.
-func Middleware(sm *SessionManager) func(http.Handler) http.Handler {
+func Middleware(sm *SessionManager, secureCookies bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if isUnixSocket(r) {
@@ -87,9 +91,19 @@ func Middleware(sm *SessionManager) func(http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
+			refreshSessionCookie(w, cookie.Value, sm.TTL(), secureCookies)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func refreshSessionCookie(w http.ResponseWriter, token string, ttl time.Duration, secure bool) {
+	maxAge := int((ttl + time.Second - 1) / time.Second)
+	http.SetCookie(w, &http.Cookie{
+		Name: cookieName, Value: token, Path: "/", HttpOnly: true,
+		Secure: secure, SameSite: http.SameSiteStrictMode,
+		MaxAge: maxAge, Expires: time.Now().Add(ttl),
+	})
 }
 
 func setSessionCookie(w http.ResponseWriter, sm *SessionManager, secure bool) error {
@@ -97,27 +111,24 @@ func setSessionCookie(w http.ResponseWriter, sm *SessionManager, secure bool) er
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: token, Path: "/", HttpOnly: true,
-		Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: 86400,
-	})
+	refreshSessionCookie(w, token, sm.TTL(), secure)
 	return nil
 }
 
-func LogoutHandler(sm *SessionManager) http.HandlerFunc {
+func LogoutHandler(sm *SessionManager, secureCookies bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if cookie, err := r.Cookie(cookieName); err == nil {
 			sm.Revoke(cookie.Value)
 		}
 		http.SetCookie(w, &http.Cookie{
 			Name: cookieName, Path: "/", HttpOnly: true,
-			Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: -1,
+			Secure: secureCookies, SameSite: http.SameSiteStrictMode, MaxAge: -1,
 		})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func CheckHandler(sm *SessionManager) http.HandlerFunc {
+func CheckHandler(sm *SessionManager, secureCookies bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(cookieName)
 		if err != nil || !sm.Validate(cookie.Value) {
@@ -126,6 +137,7 @@ func CheckHandler(sm *SessionManager) http.HandlerFunc {
 			fmt.Fprint(w, `{"authenticated":false}`)
 			return
 		}
+		refreshSessionCookie(w, cookie.Value, sm.TTL(), secureCookies)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"authenticated":true}`)
 	}
