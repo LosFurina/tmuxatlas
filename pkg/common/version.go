@@ -4,13 +4,13 @@ package common
 var NAME = "tmuxatlas"
 
 // SUMMARY of the Version
-var SUMMARY = "v0.1.3-beta.2" // x-release-please-version
+var SUMMARY = "v0.2.1"
 
 // BRANCH of the Version
 var BRANCH = "dev"
 
 // VERSION of Release
-var VERSION = "0.1.3-beta.2" // x-release-please-version
+var VERSION = "0.2.1"
 
 var COMMIT = "dirty"
 

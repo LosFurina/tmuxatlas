@@ -27,7 +27,7 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 
 - **Multi-user** — TmuxAtlas is a single-user tool. One person, one dashboard. There are no user accounts, roles, or shared access controls.
 - **Agent orchestration** — TmuxAtlas doesn't start, stop, or control your agents. It watches and reports. You run your agents however you want; TmuxAtlas just tells you what they're doing.
-- **tmux management** — TmuxAtlas doesn't configure or manage your tmux setup. Your `.tmux.conf`, layouts, and workflows stay yours.
+- **tmux management** — TmuxAtlas doesn't manage layouts or workflows. The installer can optionally add a small, clearly marked `mouse on` block to `.tmux.conf`; all other tmux configuration stays yours.
 
 ## Installation
 
@@ -39,13 +39,25 @@ Review [install.sh](install.sh), then run:
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh | sh
 ```
 
-The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Release, verifies its SHA-256 checksum, and installs `tmuxatlas` to `~/.local/bin`. Override the defaults when needed:
+The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Release, verifies its SHA-256 checksum, and installs `tmuxatlas` to `~/.local/bin`. When running interactively, it also asks whether to enable tmux mouse scrolling in `~/.tmux.conf`. The managed block is only added after confirmation and can be safely skipped when mouse support is already enabled.
+
+Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.1.3-beta.3 \
+TMUXATLAS_VERSION=v0.2.1 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
+
+For unattended installs, choose explicitly instead of waiting for a prompt:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_CONFIGURE_TMUX=yes sh
+```
+
+Set `TMUXATLAS_CONFIGURE_TMUX=no` to leave `.tmux.conf` untouched, or set
+`TMUXATLAS_TMUX_CONF` to configure a non-default path.
 
 To register the installed binary as a user service afterward:
 
