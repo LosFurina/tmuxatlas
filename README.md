@@ -53,17 +53,27 @@ For unattended installs, choose explicitly instead of waiting for a prompt:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
   TMUXATLAS_CONFIGURE_TMUX=yes sh
 ```
 
 Set `TMUXATLAS_CONFIGURE_TMUX=no` to leave `.tmux.conf` untouched, or set
 `TMUXATLAS_TMUX_CONF` to configure a non-default path.
 
+The interactive installer requires the final browser-facing URL and saves it
+to `~/.config/tmuxatlas/.env`. Non-interactive installation must provide
+`TMUXATLAS_PUBLIC_URL`. HTTPS is required for remote URLs; HTTP is accepted only
+for localhost development.
+
 To register the installed binary as a user service afterward:
 
 ```bash
-tmuxatlas install
+tmuxatlas install --public-url https://tmuxatlas.example.com
 ```
+
+The install command also reads the saved value from
+`~/.config/tmuxatlas/.env`, so the flag can be omitted after using the
+interactive installer.
 
 ### Download a release
 
@@ -91,7 +101,11 @@ Make sure [tmux](https://github.com/tmux/tmux) is running with at least one sess
 tmuxatlas server
 ```
 
-Open http://localhost:7654 in your browser. On first launch you'll set a password, then TmuxAtlas will guide you through agent setup.
+The server prints a one-time setup token on first launch. Open
+http://localhost:7654, enter that token, and create the administrator passkey.
+The browser can use the current device, a passkey manager such as Proton Pass,
+Bitwarden, or 1Password, or another device such as an iPhone by displaying a QR
+code.
 
 For remote access, keep TmuxAtlas on loopback and put a trusted HTTPS gateway in front:
 
@@ -101,7 +115,17 @@ TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
 tmuxatlas server
 ```
 
-`TMUXATLAS_PUBLIC_URL` tells TmuxAtlas that the browser-facing connection is HTTPS, so authentication cookies receive the `Secure` attribute. See [Multi-host and trusted gateway deployment](docs/multi-host.md) for Cloudflare Tunnel and Nginx+ACME examples.
+Set `TMUXATLAS_PUBLIC_URL` to the final browser-facing URL **before creating the
+first passkey**. WebAuthn binds passkeys to that hostname, and HTTPS is required
+except for the browser's localhost development exception. The setting also
+gives authentication cookies the `Secure` attribute. See
+[Multi-host and trusted gateway deployment](docs/multi-host.md) for Cloudflare
+Tunnel and Nginx+ACME examples.
+
+TmuxAtlas does not store a password or a passkey private key. It stores only the
+public WebAuthn credential record in `~/.config/tmuxatlas/passkeys.json` with
+mode `0600`. Upgrades from password-based releases ignore the old `auth.json`;
+after verifying Passkey login, you may delete that legacy file manually.
 
 ### 2. Configure agent hooks
 
@@ -207,6 +231,10 @@ Push alerts (via the Web Push API) work independently of the browser tab, includ
 
 ## Configuration
 
+TmuxAtlas automatically loads `~/.config/tmuxatlas/.env` at startup. Existing
+process environment variables take precedence. Start from
+[`.env.example`](.env.example); only `TMUXATLAS_*` entries are accepted.
+
 ### Environment variables
 
 | Variable | Default | Description |
@@ -242,7 +270,7 @@ TmuxAtlas automatically copies existing configuration from `~/.config/guppi` to 
 The old `GUPPI_*` runtime variables remain accepted as deprecated aliases, but new deployments should use `TMUXATLAS_*`. After installing the renamed binary:
 
 ```bash
-tmuxatlas install
+tmuxatlas install --public-url https://tmuxatlas.example.com
 tmuxatlas agent-setup
 ```
 

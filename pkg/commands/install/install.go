@@ -3,10 +3,12 @@ package install
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"text/template"
 
 	"github.com/urfave/cli/v3"
@@ -24,6 +26,7 @@ ExecStart={{.ExecStart}}
 Restart=on-failure
 RestartSec=5
 Environment=PATH={{.Path}}
+Environment=TMUXATLAS_PUBLIC_URL={{.PublicURL}}
 
 [Install]
 WantedBy=default.target
@@ -52,6 +55,8 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<dict>
 		<key>PATH</key>
 		<string>{{.Path}}</string>
+		<key>TMUXATLAS_PUBLIC_URL</key>
+		<string>{{.PublicURL}}</string>
 	</dict>
 </dict>
 </plist>
@@ -62,6 +67,27 @@ type serviceConfig struct {
 	ExecStart  string
 	Path       string
 	LogDir     string
+	PublicURL  string
+}
+
+func validatePublicURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return "", fmt.Errorf("public URL must be an absolute HTTP(S) URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("public URL must use HTTP or HTTPS")
+	}
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("public URL must not contain credentials, a path, query, or fragment")
+	}
+	if u.Scheme == "http" {
+		host := strings.ToLower(u.Hostname())
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			return "", fmt.Errorf("public URL must use HTTPS except on localhost")
+		}
+	}
+	return strings.TrimSuffix(u.String(), "/"), nil
 }
 
 func getBinaryPath() (string, error) {
@@ -77,6 +103,10 @@ func getBinaryPath() (string, error) {
 }
 
 func installLinux(ctx context.Context, c *cli.Command) error {
+	publicURL, err := validatePublicURL(c.String("public-url"))
+	if err != nil {
+		return err
+	}
 	binPath, err := getBinaryPath()
 	if err != nil {
 		return err
@@ -98,6 +128,7 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 		BinaryPath: binPath,
 		ExecStart:  binPath + " server",
 		Path:       os.Getenv("PATH"),
+		PublicURL:  publicURL,
 	}
 
 	tmpl, err := template.New("systemd").Parse(systemdUnit)
@@ -138,11 +169,15 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	fmt.Println("  Status:   systemctl --user status tmuxatlas")
 	fmt.Println("  Logs:     journalctl --user -u tmuxatlas -f")
 	fmt.Println("  Restart:  systemctl --user restart tmuxatlas")
-	fmt.Println("  Web UI:   http://localhost:7654")
+	fmt.Printf("  Web UI:   %s\n", publicURL)
 	return nil
 }
 
 func installDarwin(ctx context.Context, c *cli.Command) error {
+	publicURL, err := validatePublicURL(c.String("public-url"))
+	if err != nil {
+		return err
+	}
 	binPath, err := getBinaryPath()
 	if err != nil {
 		return err
@@ -165,6 +200,7 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 		BinaryPath: binPath,
 		Path:       os.Getenv("PATH"),
 		LogDir:     logDir,
+		PublicURL:  publicURL,
 	}
 
 	tmpl, err := template.New("launchd").Parse(launchdPlist)
@@ -201,7 +237,7 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 	fmt.Println("  Status:   launchctl list com.tmuxatlas.server")
 	fmt.Printf("  Logs:     tail -f %s/tmuxatlas.stderr.log\n", cfg.LogDir)
 	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/com.tmuxatlas.server\n")
-	fmt.Println("  Web UI:   http://localhost:7654")
+	fmt.Printf("  Web UI:   %s\n", publicURL)
 	return nil
 }
 
@@ -279,6 +315,14 @@ On Linux, installs a systemd user unit (~/.config/systemd/user/tmuxatlas.service
 On macOS, installs a launchd plist (~/Library/LaunchAgents/com.tmuxatlas.server.plist).
 
 Use "tmuxatlas install" to install and enable, "tmuxatlas uninstall" to remove.`,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "public-url",
+				Usage:   "Final browser-facing URL used for Passkeys",
+				Sources: cli.EnvVars("TMUXATLAS_PUBLIC_URL"),
+				Value:   "http://localhost:7654",
+			},
+		},
 		Action: installExecute,
 	}
 

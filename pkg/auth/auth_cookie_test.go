@@ -3,13 +3,11 @@ package auth
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestSetupCookieSecurityFollowsPublicURLPolicy(t *testing.T) {
+func TestSessionCookieSecurityFollowsPublicURLPolicy(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		secure bool
@@ -18,15 +16,9 @@ func TestSetupCookieSecurityFollowsPublicURLPolicy(t *testing.T) {
 		{name: "gateway HTTPS", secure: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ps := &PasswordStore{path: filepath.Join(t.TempDir(), "auth.json")}
-			sm := NewSessionManager(time.Hour)
-			req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(`{"password":"long-enough-password"}`))
 			rec := httptest.NewRecorder()
-
-			SetupHandler(ps, sm, tt.secure).ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			if err := setSessionCookie(rec, NewSessionManager(time.Hour), tt.secure); err != nil {
+				t.Fatal(err)
 			}
 			cookies := rec.Result().Cookies()
 			if len(cookies) != 1 {

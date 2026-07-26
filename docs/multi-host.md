@@ -13,7 +13,8 @@ Peer ───── HTTPS/WSS ────────────────�
 ```
 
 - The gateway authenticates the public hostname with a system-trusted certificate and forwards to `127.0.0.1:7654`.
-- TmuxAtlas password authentication protects browser access.
+- TmuxAtlas Passkey authentication protects browser access. User verification
+  is required for every registration and login.
 - Pairing stores Ed25519 public keys. Each peer control connection must sign a fresh challenge, independently of the gateway certificate.
 - `/ws/peer` carries long-lived state synchronization. `/ws/peer-pty?stream=...` carries remote terminal streams.
 
@@ -29,7 +30,44 @@ TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
 tmuxatlas server
 ```
 
-`TMUXATLAS_PUBLIC_URL=https://...` enables `Secure` authentication cookies. Do not bind the HTTP origin to a public interface. If the gateway is on another machine or container, bind only to a protected private interface and restrict it with firewall rules.
+The one-line installer asks for this URL and stores it in
+`~/.config/tmuxatlas/.env`. For unattended installation, set it explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com sh
+```
+
+`TMUXATLAS_PUBLIC_URL` is also the WebAuthn origin and determines the Passkey
+relying-party ID. Set it to the final public hostname before enrollment; a
+Passkey created for `localhost` cannot sign in at `tmuxatlas.example.com`.
+`https://...` enables `Secure` authentication cookies and the browser WebAuthn
+API. Do not bind the HTTP origin to a public interface. If the gateway is on
+another machine or container, bind only to a protected private interface and
+restrict it with firewall rules.
+
+## First Passkey enrollment
+
+On a new installation the server log prints a random, one-time setup token.
+Open the final HTTPS URL, paste that token into the setup screen, and choose
+**Create passkey**. The extra token prevents an arbitrary first public visitor
+from enrolling as administrator.
+
+Authenticator selection is handled by the browser. Depending on the browser,
+operating system, and installed extensions, it can offer:
+
+- the current device's platform Passkey;
+- **Use another device**, which displays a QR code that an iPhone can scan;
+- Proton Pass, Bitwarden, 1Password, or another WebAuthn-compatible provider.
+
+TmuxAtlas does not render the QR code itself and does not contain
+provider-specific integrations. Do not add Cloudflare Access solely for this
+flow; ordinary Cloudflare Tunnel HTTPS reverse proxying is sufficient.
+
+The one-time token is consumed when registration starts. If the browser cancels
+or verification fails, restart TmuxAtlas to emit a fresh token. The credential
+private key stays on the authenticator; TmuxAtlas stores the public credential
+record in `~/.config/tmuxatlas/passkeys.json`.
 
 ## Cloudflare Tunnel
 
@@ -204,7 +242,7 @@ tmuxatlas peers list
 
 Then verify:
 
-- browser login succeeds and the session cookie is `Secure`;
+- Passkey enrollment/login succeeds and the session cookie is `Secure`;
 - a peer remains online and its sessions update;
 - opening a remote session creates a working interactive terminal;
 - the gateway logs successful `101 Switching Protocols` responses for `/ws/peer` and `/ws/peer-pty`.

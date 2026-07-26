@@ -487,7 +487,10 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
 
 export default function App() {
   const prefsProvider = usePreferencesProvider()
-  const { loading, authRequired, needsSetup, authenticated, error: authError, setup, login, logout } = useAuth()
+  const {
+    loading, authRequired, needsSetup, authenticated, error: authError,
+    rpId, origin, setup, login, logout,
+  } = useAuth()
   const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Re-fetch preferences after login (initial fetch may have gotten 401)
@@ -524,16 +527,16 @@ export default function App() {
   }
 
   if (authRequired && needsSetup) {
-    const handleSetup = async (password: string) => {
-      const ok = await setup(password)
+    const handleSetup = async (setupToken: string, label?: string) => {
+      const ok = await setup(setupToken, label)
       if (ok) setShowOnboarding(true)
       return ok
     }
-    return <Login mode="setup" error={authError} onSubmit={handleSetup} />
+    return <Login mode="setup" error={authError} rpId={rpId} origin={origin} onSubmit={handleSetup} />
   }
 
   if (authRequired && !authenticated) {
-    return <Login mode="login" error={authError} onSubmit={login} />
+    return <Login mode="login" error={authError} rpId={rpId} origin={origin} onSubmit={() => login()} />
   }
 
   if (authenticated && showOnboarding) {

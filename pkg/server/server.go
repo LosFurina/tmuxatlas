@@ -49,7 +49,7 @@ type Options struct {
 	PushStore       *webpush.Store
 	PrefStore       *preferences.Store
 	AuthEnabled     bool
-	PasswordStore   *auth.PasswordStore
+	PasskeyManager  *auth.PasskeyManager
 	SessionMgr      *auth.SessionManager
 	PeerMgr         *peer.Manager
 	PeerHandler     *peer.Handler
@@ -141,10 +141,12 @@ func Run(ctx context.Context, opts *Options) error {
 	// API routes
 	r.Route("/api", func(r chi.Router) {
 		// Public auth endpoints (no middleware)
-		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasswordStore))
+		r.Get("/auth/status", auth.StatusHandler(opts.AuthEnabled, opts.PasskeyManager))
 		if opts.AuthEnabled {
-			r.Post("/auth/setup", auth.SetupHandler(opts.PasswordStore, opts.SessionMgr, opts.SecureCookies))
-			r.Post("/auth/login", auth.LoginHandler(opts.PasswordStore, opts.SessionMgr, opts.SecureCookies))
+			r.Post("/auth/passkey/register/begin", opts.PasskeyManager.BeginRegistrationHandler())
+			r.Post("/auth/passkey/register/finish", opts.PasskeyManager.FinishRegistrationHandler())
+			r.Post("/auth/passkey/login/begin", opts.PasskeyManager.BeginLoginHandler())
+			r.Post("/auth/passkey/login/finish", opts.PasskeyManager.FinishLoginHandler())
 			r.Post("/auth/logout", auth.LogoutHandler(opts.SessionMgr))
 			r.Get("/auth/check", auth.CheckHandler(opts.SessionMgr))
 		}

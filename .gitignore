@@ -2,6 +2,7 @@
 dist/
 /public/
 .env*
+!.env.example
 *.key
 tmp/
 web/node_modules/

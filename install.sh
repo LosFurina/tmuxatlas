@@ -15,6 +15,66 @@ fail() {
 	exit 1
 }
 
+validate_public_url() {
+	candidate="$1"
+	case "$candidate" in
+		http://* | https://*) ;;
+		*) return 1 ;;
+	esac
+	case "$candidate" in
+		*" "* | *"	"* | *"?"* | *"#"* | *"@"*) return 1 ;;
+	esac
+	authority="${candidate#*://}"
+	[ -n "$authority" ] || return 1
+	case "$authority" in
+		*/*) return 1 ;;
+	esac
+	case "$candidate" in
+		https://*) return 0 ;;
+		http://localhost | http://localhost:* | http://127.0.0.1 | http://127.0.0.1:* | http://\[::1\] | http://\[::1\]:*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+prompt_public_url() {
+	public_url="${TMUXATLAS_PUBLIC_URL:-}"
+
+	if [ -z "$public_url" ]; then
+		if ! (: </dev/tty) 2>/dev/null; then
+			fail "TMUXATLAS_PUBLIC_URL is required in non-interactive mode"
+		fi
+		while :; do
+			printf 'Public URL for browser access (for example https://tmuxatlas.example.com): ' >/dev/tty
+			IFS= read -r public_url </dev/tty || public_url=""
+			if validate_public_url "$public_url"; then
+				break
+			fi
+			printf '%s\n' 'Enter an HTTPS URL, or an HTTP localhost URL for local-only use.' >/dev/tty
+		done
+	elif ! validate_public_url "$public_url"; then
+		fail "TMUXATLAS_PUBLIC_URL must be HTTPS, or HTTP on localhost"
+	fi
+}
+
+save_environment() {
+	config_dir="${HOME}/.config/tmuxatlas"
+	env_file="${config_dir}/.env"
+	mkdir -p "$config_dir"
+	temp_env="${temp_dir}/tmuxatlas.env"
+
+	if [ -f "$env_file" ]; then
+		awk '$0 !~ /^[[:space:]]*TMUXATLAS_PUBLIC_URL=/' "$env_file" >"$temp_env"
+	else
+		: >"$temp_env"
+	fi
+	printf 'TMUXATLAS_PUBLIC_URL=%s\n' "$public_url" >>"$temp_env"
+	umask 077
+	install -m 0600 "$temp_env" "$env_file"
+	log "Saved TMUXATLAS_PUBLIC_URL in ${env_file}"
+}
+
 configure_tmux() {
 	tmux_config="${TMUXATLAS_TMUX_CONF:-${HOME}/.tmux.conf}"
 
@@ -77,6 +137,7 @@ prompt_tmux_configuration() {
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
+prompt_public_url
 
 case "$(uname -s)" in
 	Darwin) os="darwin" ;;
@@ -133,6 +194,7 @@ tar -xzf "${temp_dir}/${archive}" -C "$temp_dir"
 
 mkdir -p "$install_dir"
 install -m 0755 "${temp_dir}/tmuxatlas" "${install_dir}/tmuxatlas"
+save_environment
 
 log "Installed ${install_dir}/tmuxatlas"
 case ":${PATH}:" in
@@ -140,4 +202,4 @@ case ":${PATH}:" in
 	*) log "Add ${install_dir} to PATH before running tmuxatlas." ;;
 esac
 prompt_tmux_configuration
-log "Run 'tmuxatlas install' if you also want a systemd/launchd user service."
+log "Run 'tmuxatlas install --public-url ${public_url}' if you also want a systemd/launchd user service."

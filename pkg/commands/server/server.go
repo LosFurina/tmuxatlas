@@ -202,22 +202,35 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		go pushSender.Run(ctx)
 	}
 
-	// Initialize authentication
+	publicURL, err := validatePublicURL(c.String("public-url"))
+	if err != nil {
+		return err
+	}
+	listenAddress := c.String("listen")
+	if err := validateListenAddress(listenAddress); err != nil {
+		return err
+	}
+
+	// Initialize Passkey-only authentication. The RP ID and allowed origin are
+	// derived from the externally reachable URL, not the internal listen address.
 	var (
-		authEnabled   bool
-		passwordStore *auth.PasswordStore
-		sessionMgr    *auth.SessionManager
+		authEnabled    bool
+		passkeyManager *auth.PasskeyManager
+		sessionMgr     *auth.SessionManager
 	)
 	if !c.Bool("no-auth") {
-		passwordStore, err = auth.NewPasswordStore()
+		sessionMgr = auth.NewSessionManager(24 * time.Hour)
+		passkeyManager, err = auth.NewPasskeyManager(publicURL.String(), sessionMgr)
 		if err != nil {
 			return fmt.Errorf("failed to initialize auth: %w", err)
 		}
-		sessionMgr = auth.NewSessionManager(24 * time.Hour)
 		authEnabled = true
 
-		if !passwordStore.HasPassword() {
-			logrus.Info("no password set — open the dashboard in your browser to complete setup")
+		if !passkeyManager.HasCredentials() {
+			logrus.WithFields(logrus.Fields{
+				"setup_token": passkeyManager.BootstrapToken(),
+				"origin":      passkeyManager.Origin(),
+			}).Warn("PASSKEY SETUP REQUIRED — open the public URL and enter this one-time setup token")
 		}
 	}
 
@@ -265,14 +278,6 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		logrus.WithField("hub", hubURL).Info("connecting to hub as peer")
 	}
 
-	publicURL, err := validatePublicURL(c.String("public-url"))
-	if err != nil {
-		return err
-	}
-	listenAddress := c.String("listen")
-	if err := validateListenAddress(listenAddress); err != nil {
-		return err
-	}
 	if !isLoopbackListen(listenAddress) {
 		logrus.WithField("listen", listenAddress).
 			Warn("TmuxAtlas origin is using plaintext HTTP on a non-loopback address; protect it with a trusted private network")
@@ -291,7 +296,7 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		PushStore:       pushStore,
 		PrefStore:       prefStore,
 		AuthEnabled:     authEnabled,
-		PasswordStore:   passwordStore,
+		PasskeyManager:  passkeyManager,
 		SessionMgr:      sessionMgr,
 		PeerMgr:         peerMgr,
 		PeerHandler:     peerHandler,

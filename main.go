@@ -9,6 +9,7 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/LosFurina/tmuxatlas/pkg/common"
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent-setup"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/install"
@@ -28,6 +29,10 @@ func main() {
 				exitCode = 1
 			}
 		}()
+
+		if err := paths.LoadEnv(); err != nil {
+			logrus.WithError(err).Warn("could not load TmuxAtlas environment file")
+		}
 
 		app := &cli.Command{
 			Name:    common.AppVersion.Name,
