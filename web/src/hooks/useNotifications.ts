@@ -34,6 +34,8 @@ export function useNotifications(pushSubscribed = false) {
       shouldNotify = true
     } else if (evt.status === 'error' && prev?.status !== 'error' && enabledStatuses.includes('error')) {
       shouldNotify = true
+    } else if (evt.status === 'completed' && enabledStatuses.includes('completed')) {
+      shouldNotify = true
     }
 
     // Update prev state
@@ -49,8 +51,15 @@ export function useNotifications(pushSubscribed = false) {
     if (!pushSubscribedRef.current) {
       const title = evt.status === 'waiting'
         ? `${evt.tool} needs input`
-        : `${evt.tool} error`
-      const body = `${evt.status === 'waiting' ? 'Waiting' : 'Error'} in session "${evt.session}"${evt.message ? `: ${evt.message}` : ''}`
+        : evt.status === 'completed'
+          ? `${evt.tool} completed`
+          : `${evt.tool} error`
+      const statusLabel = evt.status === 'waiting'
+        ? 'Waiting'
+        : evt.status === 'completed'
+          ? 'Completed'
+          : 'Error'
+      const body = `${statusLabel} in session "${evt.session}"${evt.message ? `: ${evt.message}` : ''}`
 
       if ('Notification' in window && globalThis.Notification.permission === 'granted') {
         const n = new globalThis.Notification(title, { body, icon: '/favicon.ico' })

@@ -65,7 +65,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-[max(1rem,env(safe-area-inset-top))]"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       <div className="bg-card border border-border rounded-lg shadow-lg w-full max-w-md mx-4 overflow-hidden">

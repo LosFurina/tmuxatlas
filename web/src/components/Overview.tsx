@@ -5,6 +5,7 @@ import { ToolEvent } from '../hooks/useToolEvents'
 import { ActivitySnapshot } from '../hooks/useActivity'
 import { usePreferences } from '../hooks/usePreferences'
 import { toolColors, statusConfig } from '../theme'
+import { FleetHealth } from './FleetHealth'
 
 interface OverviewProps {
   sessions: Session[]
@@ -316,6 +317,8 @@ export function Overview({
           color={stats && stats.agents.waiting > 0 ? 'var(--warning)' : 'var(--color-muted-foreground)'}
         />
       </div>
+
+      <FleetHealth />
 
       {/* Pending alerts */}
       {pendingAlerts.length > 0 && (

@@ -20,6 +20,8 @@ interface SidebarProps {
   getSessionEvents: (session: string) => ToolEvent[]
   sessionNeedsAttention: (session: string) => boolean
   getSessionActivity: (session: string) => ActivitySnapshot | undefined
+  mobileOpen?: boolean
+  onMobileClose?: () => void
 }
 
 const shellCommands = new Set(['bash', 'zsh', 'fish', 'sh', 'dash', 'ksh', 'csh', 'tcsh', 'tmux', 'login'])
@@ -105,6 +107,8 @@ export function Sidebar({
   getSessionEvents,
   sessionNeedsAttention,
   getSessionActivity,
+  mobileOpen = false,
+  onMobileClose,
 }: SidebarProps) {
   const { prefs } = usePreferences()
   const [hiddenSet, setHiddenSet] = useState<Set<string>>(() => getHiddenSessions())
@@ -259,11 +263,15 @@ export function Sidebar({
   const isHidden = collapsed && collapseMode === 'hidden'
 
   return (
-    <aside className={cn(
-      'flex flex-col h-full bg-sidebar transition-all duration-300 font-mono text-sm font-bold',
+    <>
+    {mobileOpen && <button type="button" aria-label="Close session drawer" className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={onMobileClose} />}
+    <aside aria-label="Sessions" className={cn(
+      'fixed inset-y-0 left-0 z-40 flex flex-col h-full w-72 max-w-[85vw] bg-sidebar transition-transform duration-300 font-mono text-sm font-bold md:static md:z-auto md:max-w-none md:transition-all',
+      mobileOpen ? 'translate-x-0' : '-translate-x-full',
+      'md:translate-x-0',
       collapsed
-        ? collapseMode === 'hidden' ? 'w-0 overflow-hidden' : 'w-16'
-        : 'w-56',
+        ? collapseMode === 'hidden' ? 'md:w-0 md:overflow-hidden' : 'md:w-16'
+        : 'md:w-56',
       !isHidden && 'border-r border-sidebar-border',
     )}>
       {/* Session list */}
@@ -348,5 +356,6 @@ export function Sidebar({
         </div>
       )}
     </aside>
+    </>
   )
 }

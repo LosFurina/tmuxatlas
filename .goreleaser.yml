@@ -40,6 +40,7 @@ signs:
     args:
       [
         "sign-blob",
+        "--new-bundle-format=true",
         "--bundle=${signature}",
         "${artifact}",
         "--yes",

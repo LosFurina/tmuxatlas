@@ -3,16 +3,22 @@ package update
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/LosFurina/tmuxatlas/pkg/socket"
 )
 
 type serviceInfo struct {
@@ -21,7 +27,81 @@ type serviceInfo struct {
 	definition string
 	executable string
 	active     bool
+	role       string
 	restart    func(context.Context) error
+	isActive   func(context.Context) bool
+	probe      func(context.Context) (*serviceHealth, error)
+}
+
+type serviceHealth struct {
+	Role       string `json:"role"`
+	Deployment string `json:"deployment"`
+	Version    string `json:"version"`
+	Commit     string `json:"commit"`
+	InstanceID string `json:"instance_id"`
+	Ready      bool   `json:"ready"`
+}
+
+func probeLocalHealth(ctx context.Context) (*serviceHealth, error) {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket.DefaultPath())
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	var health serviceHealth
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&health); err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK || !health.Ready {
+		return &health, errors.New("service is not ready")
+	}
+	return &health, nil
+}
+
+func waitForServiceHealth(ctx context.Context, service *serviceInfo, targetVersion string, timeout time.Duration) (*serviceHealth, error) {
+	if service == nil || service.probe == nil {
+		return nil, errors.New("service health probe is unavailable")
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		health, err := service.probe(ctx)
+		active := service.isActive == nil || service.isActive(ctx)
+		roleMatches := service.role == "" || (health != nil && health.Role == service.role)
+		if err == nil && active && roleMatches && health.Ready && normalizeVersion(health.Version) == normalizeVersion(targetVersion) {
+			return health, nil
+		}
+		if !active {
+			lastErr = errors.New("service manager reports inactive")
+		} else if err == nil && !roleMatches {
+			lastErr = fmt.Errorf("running role %s does not match configured role %s", health.Role, service.role)
+		} else if err == nil {
+			lastErr = fmt.Errorf("running version %s does not match installed version %s", health.Version, targetVersion)
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, fmt.Errorf("readiness timeout: %w", lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 func parseSystemdExecStart(raw string) (string, error) {
@@ -126,9 +206,15 @@ func discoverSystemdService() (*serviceInfo, error) {
 		}
 		active := exec.Command("systemctl", "--user", "is-active", "--quiet", name).Run() == nil
 		serviceName := name
+		serviceRole := "standalone"
+		if strings.Contains(name, "agent") {
+			serviceRole = "agent"
+		} else if strings.Contains(string(raw), " hub") {
+			serviceRole = "hub"
+		}
 		service := &serviceInfo{
 			kind: "systemd", name: serviceName, definition: definition,
-			executable: executable, active: active,
+			executable: executable, active: active, role: serviceRole,
 			restart: func(ctx context.Context) error {
 				output, restartErr := exec.CommandContext(ctx, "systemctl", "--user", "restart", serviceName).CombinedOutput()
 				if restartErr != nil {
@@ -136,6 +222,10 @@ func discoverSystemdService() (*serviceInfo, error) {
 				}
 				return nil
 			},
+			isActive: func(ctx context.Context) bool {
+				return exec.CommandContext(ctx, "systemctl", "--user", "is-active", "--quiet", serviceName).Run() == nil
+			},
+			probe: probeLocalHealth,
 		}
 		if active {
 			return service, nil
@@ -170,9 +260,15 @@ func discoverLaunchdService() (*serviceInfo, error) {
 		active := exec.Command("launchctl", "print", target).Run() == nil
 		serviceLabel := label
 		serviceTarget := target
+		serviceRole := "standalone"
+		if strings.Contains(label, "agent") {
+			serviceRole = "agent"
+		} else if strings.Contains(string(raw), "<string>hub</string>") {
+			serviceRole = "hub"
+		}
 		service := &serviceInfo{
 			kind: "launchd", name: serviceLabel, definition: definition,
-			executable: executable, active: active,
+			executable: executable, active: active, role: serviceRole,
 			restart: func(ctx context.Context) error {
 				output, restartErr := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", serviceTarget).CombinedOutput()
 				if restartErr != nil {
@@ -180,6 +276,10 @@ func discoverLaunchdService() (*serviceInfo, error) {
 				}
 				return nil
 			},
+			isActive: func(ctx context.Context) bool {
+				return exec.CommandContext(ctx, "launchctl", "print", serviceTarget).Run() == nil
+			},
+			probe: probeLocalHealth,
 		}
 		if active {
 			return service, nil

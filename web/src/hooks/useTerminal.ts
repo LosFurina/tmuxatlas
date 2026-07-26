@@ -5,6 +5,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { ClipboardAddon, type IClipboardProvider, type ClipboardSelectionType } from '@xterm/addon-clipboard'
 import { usePreferences } from './usePreferences'
 import { getXtermTheme } from '../theme'
+import type { MobileTerminalInput } from '../lib/mobileTerminalInput'
+import { ensureTerminalFont } from '../fonts'
 import '@xterm/xterm/css/xterm.css'
 
 // Monotonically increasing ID to track which connection is "current"
@@ -85,7 +87,7 @@ const clipboardProvider: IClipboardProvider = {
   },
 }
 
-export function useTerminal(sessionName: string, hostId: string) {
+export function useTerminal(sessionName: string, hostId: string, mobileInput?: MobileTerminalInput) {
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -124,7 +126,7 @@ export function useTerminal(sessionName: string, hostId: string) {
     containerRef.current = container
 
     const xtermTheme = getXtermTheme(prefs.theme)
-    const fontFamily = `'${prefs.terminal.font_family}', 'JetBrains Mono', 'Fira Code', Menlo, Monaco, monospace`
+    const fontFamily = `'${prefs.terminal.font_family}', 'Symbols Nerd Font Mono', 'JetBrains Mono', Menlo, Monaco, monospace`
 
     // Create terminal with theme from preferences
     const term = new Terminal({
@@ -149,6 +151,11 @@ export function useTerminal(sessionName: string, hostId: string) {
     ;(window as any).__term = term
 
     term.open(container)
+    void ensureTerminalFont(prefs.terminal.font_family).then((loaded) => {
+      if (!loaded || activeConnId.current !== connId || termRef.current !== term) return
+      term.options.fontFamily = fontFamily
+      doFit()
+    })
 
     // Request clipboard-write permission early so OSC 52 writes may work directly
     requestClipboardPermission()
@@ -285,8 +292,7 @@ export function useTerminal(sessionName: string, hostId: string) {
     // Forward keystrokes as binary messages
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        const encoder = new TextEncoder()
-        ws.send(encoder.encode(data))
+        ws.send(mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data))
       }
     })
 
@@ -296,7 +302,7 @@ export function useTerminal(sessionName: string, hostId: string) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }))
       }
     })
-  }, [sessionName, hostId, cleanupWs, prefs.theme, prefs.terminal.font_size, prefs.terminal.font_family, prefs.terminal.scrollback])
+  }, [sessionName, hostId, cleanupWs, prefs.theme, prefs.terminal.font_size, prefs.terminal.font_family, prefs.terminal.scrollback, mobileInput])
 
   const disconnect = useCallback(() => {
     // Invalidate any active connection
@@ -327,5 +333,34 @@ export function useTerminal(sessionName: string, hostId: string) {
     termRef.current?.focus()
   }, [])
 
-  return { termRef, connect, disconnect, fit, focus, termConnected }
+  const sendInput = useCallback((data: string) => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    ws.send(mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data))
+    return true
+  }, [mobileInput])
+
+  const copySelection = useCallback(async () => {
+    const generation = activeConnId.current
+    const selection = termRef.current?.getSelection() ?? ''
+    if (!selection) throw new Error('No terminal text is selected.')
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard write is unavailable.')
+    await navigator.clipboard.writeText(selection)
+    if (generation !== activeConnId.current) return
+    termRef.current?.clearSelection()
+    focus()
+  }, [focus])
+
+  const pasteClipboard = useCallback(async () => {
+    const generation = activeConnId.current
+    if (!navigator.clipboard?.readText) throw new Error('Clipboard read is unavailable.')
+    const text = await navigator.clipboard.readText()
+    if (!text || generation !== activeConnId.current) return false
+    return sendInput(text)
+  }, [sendInput])
+
+  return {
+    termRef, connect, disconnect, fit, focus, termConnected,
+    sendInput, copySelection, pasteClipboard,
+  }
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/LosFurina/tmuxatlas/pkg/peer"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
+	"github.com/LosFurina/tmuxatlas/pkg/state"
 	"github.com/LosFurina/tmuxatlas/pkg/toolevents"
 )
 
@@ -29,8 +30,12 @@ func RunAgentSocket(ctx context.Context, socketPath string, tracker *toolevents.
 		_ = socket.Cleanup(socketPath)
 	}()
 
+	instanceID, err := state.NewInstanceID()
+	if err != nil {
+		return fmt.Errorf("create agent instance ID: %w", err)
+	}
 	httpServer := &http.Server{
-		Handler:           newLocalRouter(tracker, peerMgr, nil, nil),
+		Handler:           newLocalRouter(tracker, peerMgr, nil, nil, nativeHealth("agent", instanceID, true)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serverErr := make(chan error, 1)

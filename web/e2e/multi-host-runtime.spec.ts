@@ -54,21 +54,33 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
   const websocketURLs: string[] = []
   let rejectRename = false
   let remoteSessionName = 'same'
+  let stateSocket: { send(message: string): void } | undefined
+  await page.routeWebSocket('**/ws/events?schema=1', socket => {
+    stateSocket = socket
+    socket.send(JSON.stringify({
+      type: 'snapshot', schema_version: 1, instance_id: 'multi-host-e2e', revision: 1,
+      state: {
+        hosts: {
+          'host/local-host': { key: 'host/local-host', id: 'local-host', display_name: 'local', online: true, local: true },
+          'host/remote-host': { key: 'host/remote-host', id: 'remote-host', display_name: 'remote', online: true, local: false },
+        },
+        sessions: {
+          'session/local-host/same': { key: 'session/local-host/same', host_key: 'host/local-host', host_id: 'local-host', name: 'same', attached: false },
+          'session/remote-host/same': { key: 'session/remote-host/same', host_key: 'host/remote-host', host_id: 'remote-host', name: 'same', attached: false },
+        },
+        windows: {
+          'window/local-host/same/0': { key: 'window/local-host/same/0', session_key: 'session/local-host/same', tmux_id: '@1', name: 'shell', index: 0, active: true },
+          'window/remote-host/same/0': { key: 'window/remote-host/same/0', session_key: 'session/remote-host/same', tmux_id: '@2', name: 'shell', index: 0, active: true },
+          'window/remote-host/same/1': { key: 'window/remote-host/same/1', session_key: 'session/remote-host/same', tmux_id: '@3', name: 'editor', index: 1, active: false },
+        },
+        panes: {}, tool_events: {}, activity: {}, health: {}, metadata: { server: { version: 'e2e' } },
+      },
+    }))
+  })
   await page.routeWebSocket('**/ws/session**', socket => {
     websocketURLs.push(socket.url())
     socket.onMessage(message => terminalFrames.push(message))
   })
-  await page.route('**/api/sessions', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify([
-      session(localHost.id, localHost.name),
-      { ...session(remoteHost.id, remoteHost.name), name: remoteSessionName },
-    ]),
-  }))
-  await page.route('**/api/hosts', route => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify([localHost, remoteHost]),
-  }))
   await page.route('**/api/session/**', async route => {
     const request = route.request()
     const body = request.postDataJSON()
@@ -87,6 +99,18 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
       contentType: 'application/json',
       body: JSON.stringify({ request_id: 'ok', result: { ok: true } }),
     })
+    if (request.url().endsWith('/rename') && body.host_id === 'remote-host') {
+      setTimeout(() => {
+        stateSocket?.send(JSON.stringify({
+          type: 'delta', schema_version: 1, instance_id: 'multi-host-e2e',
+          base_revision: 1, revision: 2,
+          operations: [
+            { kind: 'remove-session', key: 'session/remote-host/same' },
+            { kind: 'upsert-session', session: { key: 'session/remote-host/renamed', host_key: 'host/remote-host', host_id: 'remote-host', name: 'renamed', attached: false } },
+          ],
+        }))
+      }, 100)
+    }
   })
 
   await page.goto(baseURL)

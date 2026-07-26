@@ -27,10 +27,10 @@ function safeDestination(value) {
 function sessionDestination(payload) {
   if (typeof payload.url === 'string') return safeDestination(payload.url)
   if (typeof payload.session !== 'string' || payload.session.length === 0 ||
-      typeof payload.host !== 'string' || payload.host.length === 0) return '/'
+      typeof payload.host_id !== 'string' || payload.host_id.length === 0) return '/'
 
   const session = encodeURIComponent(payload.session)
-  return `/session/${encodeURIComponent(payload.host)}/${session}`
+  return `/session/${encodeURIComponent(payload.host_id)}/${session}`
 }
 
 function parsePushPayload(event) {
@@ -58,7 +58,10 @@ self.addEventListener('push', (event) => {
     ? payload.body
     : DEFAULT_NOTIFICATION.body
   const url = sessionDestination(payload)
-  const tagParts = [payload.tool, payload.host, payload.session, payload.window]
+  const tagParts = [
+    payload.host_id, payload.session, payload.window, payload.pane,
+    payload.tool, payload.status,
+  ]
     .filter((part) => typeof part === 'string' || typeof part === 'number')
 
   event.waitUntil(self.registration.showNotification(title, {

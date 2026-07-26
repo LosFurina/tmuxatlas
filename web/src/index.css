@@ -1,6 +1,11 @@
 @import "tailwindcss";
 
-@import url('https://fonts.googleapis.com/css2?family=VT323&family=Space+Mono:wght@400;700&family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap');
+@font-face {
+  font-family: 'Symbols Nerd Font Mono';
+  src: url('/fonts/symbols-nerd-font-mono-subset.woff2') format('woff2');
+  font-display: swap;
+  font-weight: 400;
+}
 
 :root {
   /* Retro CRT Blue Theme */
@@ -97,6 +102,12 @@
     touch-action: none;
     position: fixed;
     inset: 0;
+  }
+  @media (max-width: 767px) {
+    body {
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+    }
   }
 }
 

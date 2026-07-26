@@ -53,7 +53,7 @@ export function NewSessionModal({ hosts, onCreateSession, onClose }: NewSessionM
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-start justify-center pt-[20vh] bg-black/50"
+      className="fixed inset-0 z-[9999] flex items-start justify-center pt-[max(10vh,env(safe-area-inset-top))] px-[max(1rem,env(safe-area-inset-left))] bg-black/50"
       onClick={onClose}
     >
       <div

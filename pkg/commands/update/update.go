@@ -258,6 +258,35 @@ func execute(ctx context.Context, c *cli.Command) error {
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
 		return fmt.Errorf("self-update is not supported on %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	store, err := defaultTransactionStore()
+	if err != nil {
+		return fmt.Errorf("initialize update transaction store: %w", err)
+	}
+	if c.Bool("rollback") {
+		tx, loadErr := store.load()
+		if loadErr != nil {
+			return loadErr
+		}
+		service, discoverErr := discoverService()
+		if discoverErr != nil {
+			return discoverErr
+		}
+		if c.Bool("no-restart") {
+			service = nil
+		}
+		if err := restorePrevious(ctx, tx, store, service); err != nil {
+			return fmt.Errorf("rollback update: %w", err)
+		}
+		fmt.Println("Rolled back to the previous TmuxAtlas release.")
+		return nil
+	}
+	if err := recoverInterrupted(store); err != nil {
+		return fmt.Errorf("recover interrupted update: %w", err)
+	}
+	if c.Bool("recover") {
+		fmt.Println("Update transaction recovery completed.")
+		return nil
+	}
 	u := newUpdater(c.String("repository"))
 	result, err := u.latest(ctx)
 	if err != nil {
@@ -302,6 +331,10 @@ func execute(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	bundleURL, err := assetURL(result, "checksums.txt.sigstore.json")
+	if err != nil {
+		return err
+	}
 	tempDir, err := os.MkdirTemp("", "tmuxatlas-update-*")
 	if err != nil {
 		return err
@@ -309,16 +342,24 @@ func execute(ctx context.Context, c *cli.Command) error {
 	defer os.RemoveAll(tempDir)
 	archivePath := filepath.Join(tempDir, archiveName)
 	checksumsPath := filepath.Join(tempDir, "checksums.txt")
-	fmt.Printf("Downloading %s...\n", archiveName)
-	if err := u.download(ctx, archiveURL, archivePath); err != nil {
-		return fmt.Errorf("download release: %w", err)
-	}
+	bundlePath := filepath.Join(tempDir, "checksums.txt.sigstore.json")
+	fmt.Println("Verifying signed release metadata...")
 	if err := u.download(ctx, checksumsURL, checksumsPath); err != nil {
 		return fmt.Errorf("download checksums: %w", err)
+	}
+	if err := u.download(ctx, bundleURL, bundlePath); err != nil {
+		return fmt.Errorf("download Sigstore bundle: %w", err)
+	}
+	if err := verifyChecksumBundle(checksumsPath, bundlePath, result.Tag); err != nil {
+		return err
 	}
 	expected, err := checksumFor(checksumsPath, archiveName)
 	if err != nil {
 		return err
+	}
+	fmt.Printf("Downloading %s...\n", archiveName)
+	if err := u.download(ctx, archiveURL, archivePath); err != nil {
+		return fmt.Errorf("download release: %w", err)
 	}
 	if err := verifyChecksum(archivePath, expected); err != nil {
 		return err
@@ -327,28 +368,76 @@ func execute(ctx context.Context, c *cli.Command) error {
 	if err := extractBinary(archivePath, binaryPath); err != nil {
 		return fmt.Errorf("extract release: %w", err)
 	}
-	if err := replaceExecutable(binaryPath, executable); err != nil {
+	stagedPath, err := stageExecutable(binaryPath, executable)
+	if err != nil {
+		return fmt.Errorf("stage verified executable: %w", err)
+	}
+	tx := updateTransaction{
+		Phase: phaseStaged, Executable: executable, StagedPath: stagedPath,
+		BackupPath: executable + ".previous", PreviousVersion: common.SUMMARY,
+		TargetVersion: result.Tag,
+	}
+	if service != nil {
+		tx.Service = service.name
+	}
+	if err := store.save(tx); err != nil {
+		_ = os.Remove(stagedPath)
+		return fmt.Errorf("journal staged update: %w", err)
+	}
+	if err := replaceWithBackup(stagedPath, executable, tx.BackupPath); err != nil {
+		tx.Error = err.Error()
+		_ = store.save(tx)
 		return err
+	}
+	tx.Phase = phaseReplaced
+	tx.StagedPath = ""
+	if err := store.save(tx); err != nil {
+		return fmt.Errorf("journal executable replacement: %w", err)
 	}
 	fmt.Printf("Updated %s to %s\n", executable, result.Tag)
 	switch {
 	case service == nil:
 		fmt.Println("No TmuxAtlas user service was detected.")
+		tx.Phase = phaseCommitted
 	case !service.active:
 		fmt.Printf("%s is not running, so it was not started.\n", service.name)
+		tx.Phase = phaseCommitted
 	case c.Bool("no-restart"):
-		fmt.Printf("%s is still running the previous version; restart it when ready.\n", service.name)
+		fmt.Printf("%s installed version is %s; running version remains %s until restart.\n", service.name, result.Tag, common.SUMMARY)
+		tx.Phase = phaseCommitted
 	default:
 		fmt.Printf("Restarting %s...\n", service.name)
 		if err := service.restart(ctx); err != nil {
-			return fmt.Errorf("binary updated, but service restart failed: %w", err)
+			tx.Error = err.Error()
+			if rollbackErr := restorePrevious(ctx, &tx, store, service); rollbackErr != nil {
+				return fmt.Errorf("restart failed (%v) and rollback failed: %w", err, rollbackErr)
+			}
+			return fmt.Errorf("service restart failed; restored previous release: %w", err)
 		}
-		fmt.Printf("Restarted %s successfully.\n", service.name)
+		tx.Phase = phaseRestarted
+		if err := store.save(tx); err != nil {
+			return err
+		}
+		health, healthErr := waitForServiceHealth(ctx, service, result.Tag, 30*time.Second)
+		if healthErr != nil {
+			tx.Error = healthErr.Error()
+			if rollbackErr := restorePrevious(ctx, &tx, store, service); rollbackErr != nil {
+				return fmt.Errorf("new service unhealthy (%v) and rollback failed: %w", healthErr, rollbackErr)
+			}
+			return fmt.Errorf("new service failed readiness; restored previous release: %w", healthErr)
+		}
+		tx.Phase = phaseHealthy
+		if err := store.save(tx); err != nil {
+			return err
+		}
+		fmt.Printf("Restarted %s successfully (%s, %s).\n", service.name, health.Role, health.Version)
 		if !strings.Contains(service.name, "agent") {
 			fmt.Println("Existing in-memory browser sessions were cleared; sign in with your Passkey again.")
 		}
+		tx.Phase = phaseCommitted
 	}
-	return nil
+	tx.Error = ""
+	return store.save(tx)
 }
 
 func init() {
@@ -359,6 +448,8 @@ func init() {
 			&cli.BoolFlag{Name: "check", Usage: "check for an update without installing it"},
 			&cli.BoolFlag{Name: "force", Usage: "reinstall even when the version is current"},
 			&cli.BoolFlag{Name: "no-restart", Usage: "do not restart a running systemd/launchd service"},
+			&cli.BoolFlag{Name: "rollback", Usage: "restore the last-known-good executable"},
+			&cli.BoolFlag{Name: "recover", Usage: "recover an interrupted update transaction without checking GitHub"},
 			&cli.StringFlag{
 				Name:    "repository",
 				Usage:   "GitHub owner/repository",

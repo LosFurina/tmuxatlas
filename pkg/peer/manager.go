@@ -217,6 +217,53 @@ func (m *Manager) GetHosts() []HostInfo {
 	return hosts
 }
 
+// StateHostSnapshots returns a defensive producer snapshot for the canonical
+// browser-state coordinator. It intentionally excludes live connections and
+// other Peer lifecycle objects.
+func (m *Manager) StateHostSnapshots() []state.HostSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	hosts := make([]state.HostSnapshot, 0, len(m.hosts))
+	for _, host := range m.hosts {
+		sessions := make([]*tmux.Session, 0, len(host.Sessions))
+		for _, session := range host.Sessions {
+			sessions = append(sessions, cloneTmuxSession(session))
+		}
+		hosts = append(hosts, state.HostSnapshot{
+			ID: host.ID, DisplayName: host.Name, Online: host.Connected,
+			Local: host.ID == m.localID, Version: host.Version, Sessions: sessions,
+		})
+	}
+	return hosts
+}
+
+func cloneTmuxSession(source *tmux.Session) *tmux.Session {
+	if source == nil {
+		return nil
+	}
+	target := *source
+	target.Windows = make([]*tmux.Window, 0, len(source.Windows))
+	for _, sourceWindow := range source.Windows {
+		if sourceWindow == nil {
+			target.Windows = append(target.Windows, nil)
+			continue
+		}
+		targetWindow := *sourceWindow
+		targetWindow.Panes = make([]*tmux.Pane, 0, len(sourceWindow.Panes))
+		for _, sourcePane := range sourceWindow.Panes {
+			if sourcePane == nil {
+				targetWindow.Panes = append(targetWindow.Panes, nil)
+				continue
+			}
+			targetPane := *sourcePane
+			targetWindow.Panes = append(targetWindow.Panes, &targetPane)
+		}
+		target.Windows = append(target.Windows, &targetWindow)
+	}
+	return &target
+}
+
 // LocalID returns this node's fingerprint
 func (m *Manager) LocalID() string {
 	return m.localID
@@ -409,9 +456,14 @@ func (m *Manager) UpdatePeerSessions(id string, sessions []*tmux.Session) {
 // UpdatePeerVersion updates a peer's reported version
 func (m *Manager) UpdatePeerVersion(id, version string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if h, ok := m.hosts[id]; ok {
+	h, ok := m.hosts[id]
+	if ok {
 		h.Version = version
+		h.LastSeen = time.Now()
+	}
+	m.mu.Unlock()
+	if ok {
+		m.broadcast(state.StateEvent{Type: "host-health-changed", Host: id, HostName: h.Name})
 	}
 }
 
@@ -428,11 +480,15 @@ func (m *Manager) UpdatePeerActivity(id string, snapshots []*activity.Snapshot) 
 // UpdatePeerStats updates a peer's system stats
 func (m *Manager) UpdatePeerStats(id string, stats map[string]interface{}) {
 	m.mu.Lock()
-	if h, ok := m.hosts[id]; ok {
+	h, ok := m.hosts[id]
+	if ok {
 		h.Stats = stats
 		h.LastSeen = time.Now()
 	}
 	m.mu.Unlock()
+	if ok {
+		m.broadcast(state.StateEvent{Type: "host-health-changed", Host: id, HostName: h.Name})
+	}
 }
 
 // GetPeerConnection returns the connection for a specific peer

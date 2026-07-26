@@ -146,6 +146,21 @@ func TestExtractBinary(t *testing.T) {
 	}
 }
 
+func TestExtractBinaryRejectsMalformedArchive(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "release.tar.gz")
+	if err := os.WriteFile(archivePath, []byte("not a gzip archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(dir, "tmuxatlas")
+	if err := extractBinary(archivePath, destination); err == nil {
+		t.Fatal("malformed archive was accepted")
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("malformed archive created destination: %v", err)
+	}
+}
+
 func TestLatestReleaseUsesGitHubAPI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/owner/repo/releases/latest" {

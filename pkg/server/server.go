@@ -38,26 +38,27 @@ import (
 )
 
 type Options struct {
-	ListenAddress   string
-	PublicURL       string
-	SecureCookies   bool
-	SocketPath      string
-	Client          *tmux.Client
-	StateMgr        *state.Manager
-	Tracker         *toolevents.Tracker
-	ActivityTracker *activity.Tracker
-	PushKeys        *webpush.VAPIDKeys
-	PushStore       *webpush.Store
-	PrefStore       *preferences.Store
-	AuthEnabled     bool
-	PasskeyManager  *auth.PasskeyManager
-	SessionMgr      *auth.SessionManager
-	PeerMgr         *peer.Manager
-	PeerHandler     *peer.Handler
-	PairingMgr      *identity.PairingManager
-	PTYRelay        *peer.PTYRelay
-	Detector        *toolevents.Detector
-	LocalOnly       bool
+	ListenAddress    string
+	PublicURL        string
+	SecureCookies    bool
+	SocketPath       string
+	Client           *tmux.Client
+	StateMgr         *state.Manager
+	StateCoordinator *state.Coordinator
+	Tracker          *toolevents.Tracker
+	ActivityTracker  *activity.Tracker
+	PushKeys         *webpush.VAPIDKeys
+	PushStore        *webpush.Store
+	PrefStore        *preferences.Store
+	AuthEnabled      bool
+	PasskeyManager   *auth.PasskeyManager
+	SessionMgr       *auth.SessionManager
+	PeerMgr          *peer.Manager
+	PeerHandler      *peer.Handler
+	PairingMgr       *identity.PairingManager
+	PTYRelay         *peer.PTYRelay
+	Detector         *toolevents.Detector
+	LocalOnly        bool
 }
 
 func writeRuntimeError(w http.ResponseWriter, err error) {
@@ -167,6 +168,109 @@ func handleRemoteSession(w http.ResponseWriter, r *http.Request, opts *Options, 
 func Run(ctx context.Context, opts *Options) error {
 	logger := logrus.WithField("component", "server")
 
+	coordinator := opts.StateCoordinator
+	if coordinator == nil {
+		var err error
+		coordinator, err = state.NewCoordinator()
+		if err != nil {
+			return fmt.Errorf("initialize canonical state: %w", err)
+		}
+		defer coordinator.Close()
+		opts.StateCoordinator = coordinator
+	}
+	if opts.PeerMgr != nil {
+		if _, err := coordinator.ReplaceHosts(ctx, opts.PeerMgr.StateHostSnapshots()); err != nil {
+			return fmt.Errorf("initialize canonical host projection: %w", err)
+		}
+		if err := syncFleetHealth(ctx, coordinator, opts.PeerMgr.GetHosts(), time.Now()); err != nil {
+			return fmt.Errorf("initialize fleet health: %w", err)
+		}
+		stateEvents := opts.PeerMgr.Subscribe()
+		defer opts.PeerMgr.Unsubscribe(stateEvents)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case _, ok := <-stateEvents:
+					if !ok {
+						return
+					}
+					if _, err := coordinator.ReplaceHosts(ctx, opts.PeerMgr.StateHostSnapshots()); err != nil &&
+						!errors.Is(err, context.Canceled) {
+						logger.WithError(err).Warn("failed to refresh canonical host projection")
+					}
+					if err := syncFleetHealth(ctx, coordinator, opts.PeerMgr.GetHosts(), time.Now()); err != nil &&
+						!errors.Is(err, context.Canceled) {
+						logger.WithError(err).Warn("failed to refresh fleet health")
+					}
+				}
+			}
+		}()
+	}
+	if opts.PrefStore != nil {
+		if _, err := coordinator.SetMetadata(ctx, "preferences", opts.PrefStore.Get()); err != nil {
+			return fmt.Errorf("initialize canonical preferences: %w", err)
+		}
+	}
+	if _, err := coordinator.SetMetadata(ctx, "server", map[string]string{
+		"version": common.VERSION,
+		"commit":  common.COMMIT,
+	}); err != nil {
+		return fmt.Errorf("initialize canonical server metadata: %w", err)
+	}
+	localHostID := ""
+	if opts.PeerMgr != nil {
+		localHostID = opts.PeerMgr.LocalID()
+	}
+	if opts.Tracker != nil {
+		toolEvents := opts.Tracker.Subscribe()
+		defer opts.Tracker.Unsubscribe(toolEvents)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case event, ok := <-toolEvents:
+					if !ok {
+						return
+					}
+					if _, err := coordinator.ApplyToolEvent(ctx, event, localHostID); err != nil &&
+						!errors.Is(err, context.Canceled) {
+						logger.WithError(err).Warn("failed to commit canonical tool event")
+					}
+				}
+			}
+		}()
+	}
+	if opts.ActivityTracker != nil {
+		collectActivity := func() []*activity.Snapshot {
+			snapshots := opts.ActivityTracker.GetAll()
+			if opts.PeerMgr != nil && !opts.LocalOnly {
+				snapshots = append(snapshots, opts.PeerMgr.GetAllActivity()...)
+			}
+			return snapshots
+		}
+		if _, err := coordinator.ReplaceActivity(ctx, collectActivity(), localHostID); err != nil {
+			return fmt.Errorf("initialize canonical activity: %w", err)
+		}
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if _, err := coordinator.ReplaceActivity(ctx, collectActivity(), localHostID); err != nil &&
+						!errors.Is(err, context.Canceled) {
+						logger.WithError(err).Warn("failed to refresh canonical activity")
+					}
+				}
+			}
+		}()
+	}
+
 	publicURL := opts.PublicURL
 	if publicURL == "" {
 		publicURL = "http://localhost:7654"
@@ -248,28 +352,23 @@ func Run(ctx context.Context, opts *Options) error {
 			})
 
 			r.Get("/sessions", func(w http.ResponseWriter, r *http.Request) {
-				var sessions []*tmux.Session
-				if opts.PeerMgr != nil {
-					if opts.LocalOnly {
-						sessions = opts.PeerMgr.GetLocalSessions()
-					} else {
-						sessions = opts.PeerMgr.GetAllSessions()
-					}
-				} else {
-					sessions = opts.StateMgr.GetSessions()
+				snapshot, err := coordinator.Snapshot(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(sessions)
+				json.NewEncoder(w).Encode(snapshot.State.SessionViews())
 			})
 
 			r.Get("/hosts", func(w http.ResponseWriter, r *http.Request) {
-				if opts.PeerMgr != nil {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(opts.PeerMgr.GetHosts())
-				} else {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode([]interface{}{})
+				snapshot, err := coordinator.Snapshot(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
 				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(snapshot.State.HostViews())
 			})
 
 			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/new", func(w http.ResponseWriter, r *http.Request) {
@@ -291,47 +390,20 @@ func Run(ctx context.Context, opts *Options) error {
 			// Tool event query/management (auth-protected)
 			r.Get("/tool-events", func(w http.ResponseWriter, r *http.Request) {
 				session := r.URL.Query().Get("session")
-				var events []*toolevents.Event
-				if session != "" {
-					events = opts.Tracker.GetForSession(session)
-				} else {
-					events = opts.Tracker.GetAll()
+				snapshot, err := coordinator.Snapshot(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
 				}
-
-				// Merge in auto-detected agents that don't have a tracked event.
-				// These are "active" agents found via process-tree inspection
-				// (e.g. codex/copilot running as node).
-				if opts.Detector != nil {
-					tracked := make(map[string]bool)
-					for _, evt := range events {
-						if evt.Pane != "" {
-							tracked[evt.Pane] = true
+				events := snapshot.State.ToolEventViews()
+				if session != "" {
+					filtered := events[:0]
+					for _, event := range events {
+						if event.Session == session {
+							filtered = append(filtered, event)
 						}
 					}
-					for paneID, tool := range opts.Detector.DetectedPanes() {
-						if tracked[paneID] {
-							continue
-						}
-						info := opts.Detector.PaneInfo(paneID)
-						if session != "" && info.Session != session {
-							continue
-						}
-						evt := &toolevents.Event{
-							Tool:         tool,
-							Status:       toolevents.StatusActive,
-							Session:      info.Session,
-							Window:       info.Window,
-							Pane:         paneID,
-							Message:      "auto-detected",
-							AutoDetected: true,
-						}
-						// Stamp local host identity so frontend session key matching works
-						if opts.PeerMgr != nil {
-							evt.Host = opts.PeerMgr.LocalID()
-							evt.HostName = opts.PeerMgr.LocalName()
-						}
-						events = append(events, evt)
-					}
+					events = filtered
 				}
 
 				w.Header().Set("Content-Type", "application/json")
@@ -340,6 +412,10 @@ func Run(ctx context.Context, opts *Options) error {
 
 			mutations.Delete("/tool-events", func(w http.ResponseWriter, r *http.Request) {
 				opts.Tracker.ClearAll()
+				if _, err := coordinator.ClearToolEvents(r.Context(), "", "", 0, ""); err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -355,13 +431,29 @@ func Run(ctx context.Context, opts *Options) error {
 					return
 				}
 				opts.Tracker.Clear(req.Host, req.Session, req.Window, req.Pane)
+				if _, err := coordinator.ClearToolEvents(
+					r.Context(), req.Host, req.Session, req.Window, req.Pane,
+				); err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			})
 
 			// Stats endpoint — aggregate overview data
 			r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-				sessions := opts.StateMgr.GetSessions()
-				allPanes, _ := opts.Client.ListAllPanes()
+				snapshot, err := coordinator.Snapshot(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				sessions := snapshot.State.SessionViews()
+				var allPanes []*tmux.Pane
+				for _, session := range sessions {
+					for _, window := range session.Windows {
+						allPanes = append(allPanes, window.Panes...)
+					}
+				}
 
 				agentCommands := map[string]bool{
 					"claude": true, "codex": true, "copilot": true, "opencode": true,
@@ -379,7 +471,7 @@ func Run(ctx context.Context, opts *Options) error {
 				// Build a set of panes with known agent tool events (from hooks
 				// or process-tree detection). This catches agents like codex and
 				// copilot that show up as "node" in pane_current_command.
-				toolEvents := opts.Tracker.GetAll()
+				toolEvents := snapshot.State.ToolEventViews()
 				agentEventPanes := make(map[string]bool)
 				for _, evt := range toolEvents {
 					if evt.Pane != "" {
@@ -434,30 +526,22 @@ func Run(ctx context.Context, opts *Options) error {
 			// Activity endpoints
 			r.Get("/activity", func(w http.ResponseWriter, r *http.Request) {
 				session := r.URL.Query().Get("session")
+				snapshot, err := coordinator.Snapshot(r.Context())
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+					return
+				}
+				snapshots := snapshot.State.ActivityViews()
 				w.Header().Set("Content-Type", "application/json")
 				if session != "" {
-					snap := opts.ActivityTracker.Get(session)
-					// Stamp host on local snapshot in multi-host mode
-					if snap != nil && opts.PeerMgr != nil && snap.Host == "" {
-						snap.Host = opts.PeerMgr.LocalID()
+					for _, activitySnapshot := range snapshots {
+						if activitySnapshot.SessionName == session {
+							json.NewEncoder(w).Encode(activitySnapshot)
+							return
+						}
 					}
-					json.NewEncoder(w).Encode(snap)
+					json.NewEncoder(w).Encode(nil)
 				} else {
-					snapshots := opts.ActivityTracker.GetAll()
-					// Stamp host on local snapshots in multi-host mode
-					if opts.PeerMgr != nil {
-						localID := opts.PeerMgr.LocalID()
-						for _, s := range snapshots {
-							if s.Host == "" {
-								s.Host = localID
-							}
-						}
-						// Merge in peer activity if not local-only
-						if !opts.LocalOnly {
-							peerActivity := opts.PeerMgr.GetAllActivity()
-							snapshots = append(snapshots, peerActivity...)
-						}
-					}
 					json.NewEncoder(w).Encode(snapshots)
 				}
 			})
@@ -484,7 +568,10 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "invalid subscription", http.StatusBadRequest)
 					return
 				}
-				opts.PushStore.Add(&sub)
+				if err := opts.PushStore.Add(&sub); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -500,7 +587,10 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "endpoint is required", http.StatusBadRequest)
 					return
 				}
-				opts.PushStore.Remove(req.Endpoint)
+				if err := opts.PushStore.Remove(req.Endpoint); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			})
 
@@ -530,6 +620,10 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
+				if _, err := coordinator.SetMetadata(r.Context(), "preferences", &prefs); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(&prefs)
 			})
@@ -556,6 +650,7 @@ func Run(ctx context.Context, opts *Options) error {
 
 	// WebSocket routes (protected by auth if enabled)
 	hub := ws.NewHub(opts.StateMgr, opts.Tracker)
+	hub.SetCoordinator(coordinator)
 	if opts.ActivityTracker != nil {
 		var peerActivity ws.ActivitySource
 		localHostID := ""
@@ -668,7 +763,7 @@ func Run(ctx context.Context, opts *Options) error {
 		logger.WithError(err).Warn("failed to listen on unix socket, notify via socket will be unavailable")
 	} else {
 		localServer := &http.Server{
-			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager),
+			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, nativeHealth("standalone", coordinator.InstanceID(), true)),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {

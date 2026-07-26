@@ -49,7 +49,7 @@ systemd/launchd user service; Agent installation also completes pairing.
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.7.0 \
+TMUXATLAS_VERSION=v0.8.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```

@@ -13,8 +13,11 @@ import (
 
 const localToolEventBodyLimit = 4096
 
-func newLocalRouter(tracker *toolevents.Tracker, peerMgr *peer.Manager, pairing *identity.PairingManager, passkeys *auth.PasskeyManager) http.Handler {
+func newLocalRouter(tracker *toolevents.Tracker, peerMgr *peer.Manager, pairing *identity.PairingManager, passkeys *auth.PasskeyManager, health ...RuntimeHealth) http.Handler {
 	mux := http.NewServeMux()
+	if len(health) > 0 {
+		mux.Handle("/health", healthHandler(health[0]))
+	}
 	mux.Handle("/api/tool-event", localToolEventHandler(tracker, peerMgr))
 	if pairing != nil {
 		mux.HandleFunc("/api/pair", func(w http.ResponseWriter, _ *http.Request) {

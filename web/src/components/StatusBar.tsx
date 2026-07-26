@@ -57,8 +57,8 @@ export function StatusBar({ sessionCount, connected, activeSession, waitingCount
   const totalAgents = stats.agent_panes ?? agentCount
 
   return (
-    <footer className="flex items-center justify-between px-4 py-1 border-t border-border bg-card text-xs text-muted-foreground font-mono font-bold">
-      <div className="flex items-center gap-4">
+    <footer className="flex items-center justify-between gap-4 overflow-x-auto px-[max(1rem,env(safe-area-inset-left))] pt-1 pb-[max(.25rem,env(safe-area-inset-bottom))] border-t border-border bg-card text-xs text-muted-foreground font-mono font-bold">
+      <div className="flex items-center gap-4 shrink-0">
         {peersConfigured > 0 && (
           <span>PEERS: <span className={peersConnected === peersConfigured ? 'text-foreground' : 'text-warning'}>{peersConnected}/{peersConfigured}</span></span>
         )}
@@ -80,7 +80,7 @@ export function StatusBar({ sessionCount, connected, activeSession, waitingCount
           <span className="text-warning">WAITING: {waitingCount}</span>
         )}
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 shrink-0">
         {stats.cpu_percent !== undefined && (
           <span>CPU: <span className="text-foreground">{stats.cpu_percent}%</span></span>
         )}

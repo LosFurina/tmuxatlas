@@ -212,8 +212,11 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		logrus.WithError(err).Warn("failed to load VAPID keys, push notifications will be unavailable")
 	} else {
 		pushKeys = vapidKeys
-		pushStore = webpush.NewStore()
-		pushSender := webpush.NewSender(pushKeys, pushStore, tracker)
+		pushStore, err = webpush.NewStore()
+		if err != nil {
+			return fmt.Errorf("failed to initialize push subscription store: %w", err)
+		}
+		pushSender := webpush.NewSender(pushKeys, pushStore, tracker, prefStore)
 		go pushSender.Run(ctx)
 	}
 

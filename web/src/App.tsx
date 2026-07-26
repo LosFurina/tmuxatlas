@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { Sidebar } from './components/Sidebar'
-import { Terminal } from './components/Terminal'
 import { Overview } from './components/Overview'
 import { QuickSwitcher } from './components/QuickSwitcher'
 import { NewSessionModal } from './components/NewSessionModal'
@@ -10,12 +9,10 @@ import { Settings } from './components/Settings'
 import { HelpModal } from './components/HelpModal'
 import { Login } from './components/Login'
 import { Setup } from './components/Setup'
-import { useSessions, Session, sessionKey, parseSessionKey } from './hooks/useSessions'
-import { useHosts } from './hooks/useHosts'
-import { useToolEvents } from './hooks/useToolEvents'
-import { useActivity } from './hooks/useActivity'
+import { StateConnectionNotice } from './components/StateConnectionNotice'
+import { type Session, sessionKey, parseSessionKey } from './hooks/useSessions'
+import type { ToolEvent } from './hooks/useToolEvents'
 import { useNotifications } from './hooks/useNotifications'
-import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePWAInstall, type PWAInstallState } from './hooks/usePWAInstall'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
@@ -23,8 +20,11 @@ import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
 import { getBrandStorage, setBrandStorage } from './lib/brandStorage'
 import { postRuntimeMutation } from './lib/runtimeApi'
+import { ApplicationStateProvider, useApplicationState } from './state/provider'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
+
+const Terminal = lazy(() => import('./components/Terminal').then(module => ({ default: module.Terminal })))
 
 function getViewFromPath(): { view: View; sessionKey: string | null } {
   if (window.location.pathname === '/settings') {
@@ -44,12 +44,38 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
 }
 
 function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall: PWAInstallState }) {
-  const { sessions, refresh } = useSessions()
-  const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
-  const { getSessionActivity, handleActivityEvent } = useActivity()
+  const {
+    state: applicationState,
+    sessions,
+    hosts,
+    toolEvents: allToolEvents,
+    activity,
+    rehydrate,
+  } = useApplicationState()
+  const refresh = useCallback(async () => { rehydrate() }, [rehydrate])
+  const getSessionEvents = useCallback((key: string) => {
+    const { host, name } = parseSessionKey(key)
+    return allToolEvents.filter(event => event.host === host && event.session === name)
+  }, [allToolEvents])
+  const sessionNeedsAttention = useCallback((key: string) => (
+    getSessionEvents(key).some(event => event.status === 'waiting')
+  ), [getSessionEvents])
+  const getSessionActivity = useCallback((key: string) => activity.get(key), [activity])
+  const dismissEvent = useCallback(async (event: ToolEvent) => {
+    await fetch('/api/tool-event', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: event.host || '', session: event.session,
+        window: event.window, pane: event.pane || '',
+      }),
+    })
+  }, [])
+  const dismissAllEvents = useCallback(async () => {
+    await fetch('/api/tool-events', { method: 'DELETE' })
+  }, [])
   const { pushState, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushNotifications()
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
-  const { hosts, refresh: refreshHosts } = useHosts()
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
   const [selectedSession, setSelectedSession] = useState<string | null>(() => getViewFromPath().sessionKey)
   const hasMultipleHosts = hosts.length > 1
@@ -62,11 +88,40 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return getBrandStorage('sidebar-collapsed') === 'true' } catch { return false }
   })
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
   const { prefs } = usePreferences()
+
+  useEffect(() => {
+    const metadata = applicationState.projection.metadata?.server as
+      | { version?: string }
+      | undefined
+    const version = metadata?.version || null
+    if (!loadedVersionRef.current && version) loadedVersionRef.current = version
+    setServerVersion(version)
+  }, [applicationState.projection.metadata])
+
+  const notifiedEventsRef = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (applicationState.connection !== 'ready') return
+    const signatures = new Set(allToolEvents.map(event => [
+      event.host, event.session, event.window, event.pane,
+      event.tool, event.status, event.timestamp,
+    ].join('|')))
+    if (notifiedEventsRef.current) {
+      for (const event of allToolEvents) {
+        const signature = [
+          event.host, event.session, event.window, event.pane,
+          event.tool, event.status, event.timestamp,
+        ].join('|')
+        if (!notifiedEventsRef.current.has(signature)) processToolEvent(event)
+      }
+    }
+    notifiedEventsRef.current = signatures
+  }, [applicationState.connection, allToolEvents, processToolEvent])
 
   // Auto-lock: idle detection + optional background accelerator
   const lastActivityRef = useRef<number>(Date.now())
@@ -226,39 +281,18 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession])
 
-  // Listen for state events via WebSocket
-  const onEvent = useCallback((evt: any) => {
-    if (evt.type === 'welcome') {
-      const v = evt.version || null
-      if (!loadedVersionRef.current) {
-        loadedVersionRef.current = v
-      }
-      setServerVersion(v)
-      return
-    }
-    if (evt.type === 'tool-event') {
-      handleToolEvent(evt)
-      processToolEvent(evt)
-      return
-    }
-    if (evt.type === 'activity') {
-      handleActivityEvent(evt.snapshots || [])
-      return
-    }
-    if (['session-added', 'session-removed', 'sessions-changed'].includes(evt.type)) {
-      refresh()
-    }
-    if (['peer-connected', 'peer-disconnected'].includes(evt.type)) {
-      refresh()
-      refreshHosts()
-    }
-  }, [refresh, refreshHosts, handleToolEvent, processToolEvent, handleActivityEvent])
-
-  const { connected } = useWebSocket('/ws/events', onEvent)
+  const connected = applicationState.connection === 'ready'
+    ? true
+    : applicationState.connection === 'connecting'
+      ? null
+      : false
 
   // If selected session was removed, go back to overview
   // (don't bounce if we're waiting for a newly created session to appear)
   useEffect(() => {
+    if (pendingSessionRef.current && sessions.some(s => sessionKey(s) === pendingSessionRef.current)) {
+      pendingSessionRef.current = null
+    }
     if (selectedSession && selectedSession === pendingSessionRef.current) return
     if (selectedSession && sessions.length > 0 && !sessions.find(s => sessionKey(s) === selectedSession)) {
       navigateTo(null)
@@ -266,6 +300,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   }, [sessions, selectedSession, navigateTo])
 
   const handleSessionSelect = (session: Session) => {
+    setMobileSidebarOpen(false)
     navigateTo(sessionKey(session))
   }
 
@@ -334,7 +369,9 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
       pendingSessionRef.current = sessKey
       navigateTo(sessKey)
       await refresh()
-      pendingSessionRef.current = null
+      window.setTimeout(() => {
+        if (pendingSessionRef.current === sessKey) pendingSessionRef.current = null
+      }, 10_000)
       setTimeout(() => refocusTerminal(), 300)
     } catch (err) {
       console.error('Failed to create session:', err)
@@ -376,6 +413,10 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
 
   return (
     <div className="flex flex-col h-dvh w-screen bg-background text-foreground relative">
+      <StateConnectionNotice
+        state={applicationState.connection}
+        onAuthRequired={onLogout}
+      />
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {runtimeError && (
         <button
@@ -408,7 +449,10 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
         <TopBar
           currentView={currentView}
           sidebarCollapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+          onToggleCollapse={() => {
+            if (window.matchMedia('(max-width: 767px)').matches) setMobileSidebarOpen(open => !open)
+            else setSidebarCollapsed(c => !c)
+          }}
           onOverview={() => navigateTo(null)}
           onSettings={navigateToSettings}
           onNewSession={openNewSessionModal}
@@ -433,9 +477,10 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
               if (selectedSession === oldKey) {
                 pendingSessionRef.current = newKey
                 navigateTo(newKey)
-                refresh().finally(() => {
-                  pendingSessionRef.current = null
-                })
+                void refresh()
+                window.setTimeout(() => {
+                  if (pendingSessionRef.current === newKey) pendingSessionRef.current = null
+                }, 10_000)
               } else {
                 void refresh()
               }
@@ -444,6 +489,8 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
             getSessionEvents={getSessionEvents}
             sessionNeedsAttention={sessionNeedsAttention}
             getSessionActivity={getSessionActivity}
+            mobileOpen={mobileSidebarOpen}
+            onMobileClose={() => setMobileSidebarOpen(false)}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -459,12 +506,14 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
             />
           ) : selectedSession ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
-              <Terminal
-                sessionName={parseSessionKey(selectedSession).name}
-                hostId={parseSessionKey(selectedSession).host}
-                fullscreen={terminalFullscreen}
-                onToggleFullscreen={toggleFullscreen}
-              />
+              <Suspense fallback={<div className="flex-1 grid place-items-center font-mono text-muted-foreground">Loading terminal…</div>}>
+                <Terminal
+                  sessionName={parseSessionKey(selectedSession).name}
+                  hostId={parseSessionKey(selectedSession).host}
+                  fullscreen={terminalFullscreen}
+                  onToggleFullscreen={toggleFullscreen}
+                />
+              </Suspense>
             </div>
           ) : (
             <Overview
@@ -565,7 +614,9 @@ export default function App() {
 
   return (
     <PreferencesContext.Provider value={prefsProvider}>
-      <AppInner onLogout={authRequired ? logout : undefined} pwaInstall={pwaInstall} />
+      <ApplicationStateProvider>
+        <AppInner onLogout={authRequired ? logout : undefined} pwaInstall={pwaInstall} />
+      </ApplicationStateProvider>
     </PreferencesContext.Provider>
   )
 }

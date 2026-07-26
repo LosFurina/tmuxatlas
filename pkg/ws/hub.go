@@ -2,8 +2,11 @@ package ws
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +64,13 @@ type Hub struct {
 	peerActivity    ActivitySource // optional, for multi-host
 	localHostID     string         // optional, set in multi-host mode
 	localOnly       bool
+	coordinator     *state.Coordinator
+	stateQueueSize  int
+}
+
+func (h *Hub) SetCoordinator(coordinator *state.Coordinator) {
+	h.coordinator = coordinator
+	h.stateQueueSize = 64
 }
 
 // NewHub creates a new WebSocket hub
@@ -82,6 +92,9 @@ func (h *Hub) SetActivityTracker(at *activity.Tracker, peerActivity ActivitySour
 
 // Run starts broadcasting state events and tool events to connected clients
 func (h *Hub) Run() {
+	if h.coordinator != nil {
+		return
+	}
 	stateCh := h.stateMgr.Subscribe()
 	defer h.stateMgr.Unsubscribe(stateCh)
 
@@ -220,6 +233,10 @@ func (h *Hub) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		logrus.WithError(err).Warn("ws upgrade failed")
 		return
 	}
+	if h.coordinator != nil {
+		h.handleCanonicalEvents(conn, r)
+		return
+	}
 	conn.SetReadLimit(64 << 10)
 	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	conn.SetPongHandler(func(string) error {
@@ -273,4 +290,110 @@ func (h *Hub) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 	conn.Close()
 	logrus.Debug("state ws client disconnected")
+}
+
+func (h *Hub) handleCanonicalEvents(conn *websocket.Conn, r *http.Request) {
+	defer conn.Close()
+	schemaVersion, err := requestedSchema(r)
+	if err != nil || !h.coordinator.SupportsSchema(schemaVersion) {
+		reason := "loaded frontend state schema is incompatible; reload required"
+		if err != nil {
+			reason = err.Error()
+		}
+		_ = conn.WriteJSON(state.OutcomeEnvelope{
+			Type: state.EnvelopeReloadRequired, SchemaVersion: h.coordinator.SchemaVersion(),
+			InstanceID: h.coordinator.InstanceID(), Reason: reason,
+		})
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason),
+			time.Now().Add(5*time.Second),
+		)
+		return
+	}
+
+	subscription, err := h.coordinator.Subscribe(r.Context(), h.stateQueueSize)
+	if err != nil {
+		logrus.WithError(err).Warn("failed to subscribe state ws client")
+		return
+	}
+	defer subscription.Cancel()
+
+	c := &client{conn: conn}
+	conn.SetReadLimit(64 << 10)
+	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+	})
+	if err := writeCanonicalEnvelope(c, subscription.Snapshot); err != nil {
+		return
+	}
+
+	disconnected := make(chan struct{})
+	go func() {
+		defer close(disconnected)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	pingTicker := time.NewTicker(15 * time.Second)
+	defer pingTicker.Stop()
+	logrus.WithFields(logrus.Fields{
+		"instance_id": subscription.Snapshot.InstanceID,
+		"revision":    subscription.Snapshot.Revision,
+	}).Debug("canonical state ws client connected")
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-disconnected:
+			return
+		case <-pingTicker.C:
+			c.mu.Lock()
+			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			c.mu.Unlock()
+			if err != nil {
+				return
+			}
+		case message, ok := <-subscription.C:
+			if !ok {
+				return
+			}
+			if message.Outcome != nil {
+				_ = writeCanonicalEnvelope(c, message.Outcome)
+				return
+			}
+			if message.Delta != nil {
+				if err := writeCanonicalEnvelope(c, message.Delta); err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+func requestedSchema(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("schema")
+	if raw == "" {
+		return 0, errors.New("state schema query parameter is required")
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil || version <= 0 {
+		return 0, fmt.Errorf("invalid state schema %q", raw)
+	}
+	return version, nil
+}
+
+func writeCanonicalEnvelope(c *client, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteMessage(websocket.TextMessage, data)
 }

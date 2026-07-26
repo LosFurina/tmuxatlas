@@ -219,7 +219,7 @@ test('keeps Push payloads and notification clicks on the Hub origin', async ({ p
         json: () => ({
           title: 'Codex needs input',
           body: 'waiting in session "project.v2"',
-          host: 'host-a',
+          host_id: 'host-a',
           session: 'project.v2',
         }),
       },

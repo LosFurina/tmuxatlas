@@ -64,7 +64,7 @@ export function TopBar({
   }, [events, prefs.agent_banner.auto_dismiss_seconds, onDismiss])
 
   return (
-    <header className="flex items-center justify-between px-4 h-12 border-b border-border bg-card shrink-0 font-mono text-sm font-bold">
+    <header className="flex items-center justify-between px-[max(1rem,env(safe-area-inset-left))] h-12 pt-[env(safe-area-inset-top)] border-b border-border bg-card shrink-0 font-mono text-sm font-bold">
       {/* Left: Logo + alerts */}
       <div className="flex items-center gap-4 flex-1 overflow-hidden">
         <div className="flex items-center gap-2 cursor-pointer shrink-0" onClick={onOverview}>
@@ -85,6 +85,7 @@ export function TopBar({
           </button>
           <button
             onClick={onToggleCollapse}
+            aria-label="Toggle session drawer"
             title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             className="p-1.5 rounded hover:bg-accent text-foreground transition-colors"
           >

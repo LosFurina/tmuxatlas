@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0](https://github.com/LosFurina/tmuxatlas/compare/v0.7.0...v0.8.0) (2026-07-27)
+
+### Features
+
+* add revisioned canonical state sync and resilient browser reconnect lifecycle
+* persist Push subscriptions and expose multi-host Fleet Health
+* add signed transactional self-update with readiness checks and rollback
+* add mobile terminal controls, responsive drawer, and safe-area support
+* self-host application and terminal fonts with reproducible Nerd Symbols subset
+
 ## [0.7.0](https://github.com/LosFurina/tmuxatlas/compare/v0.6.0...v0.7.0) (2026-07-26)
 
 ### Breaking changes

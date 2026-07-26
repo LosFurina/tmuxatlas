@@ -1,61 +1,61 @@
 ## 1. Canonical State 契约
 
-- [ ] 1.1 定义 state `schema_version`、`instance_id`、snapshot/delta envelope、typed operation 和 stable host/session/window/pane key，并用 table tests 验证序列化与跨主机同名 session 不冲突。
-- [ ] 1.2 实现单 goroutine state coordinator 与 typed mutation 提交入口，确保 material commit 单调增加 revision、no-op 不增 revision，并添加并发 producer 单元测试。
-- [ ] 1.3 实现 immutable/defensive snapshot 与原子 subscribe，使用 bounded subscriber queue 在 overflow 时返回 resync outcome，并测试 snapshot 与首个 delta 无漏事件窗口。
-- [ ] 1.4 实现 Hub process `instance_id`、state schema compatibility 检查和 restart 世代语义，并测试新 instance 不与旧 revision 混用。
+- [x] 1.1 定义 state `schema_version`、`instance_id`、snapshot/delta envelope、typed operation 和 stable host/session/window/pane key，并用 table tests 验证序列化与跨主机同名 session 不冲突。
+- [x] 1.2 实现单 goroutine state coordinator 与 typed mutation 提交入口，确保 material commit 单调增加 revision、no-op 不增 revision，并添加并发 producer 单元测试。
+- [x] 1.3 实现 immutable/defensive snapshot 与原子 subscribe，使用 bounded subscriber queue 在 overflow 时返回 resync outcome，并测试 snapshot 与首个 delta 无漏事件窗口。
+- [x] 1.4 实现 Hub process `instance_id`、state schema compatibility 检查和 restart 世代语义，并测试新 instance 不与旧 revision 混用。
 
 ## 2. 后端 State 集成与 WebSocket
 
-- [ ] 2.1 将本机 discovery 与现有 host/session 聚合接入 coordinator，统一用 stable identity 生成 projection，并验证单机及两个 host 同名 session 的 snapshot。
-- [ ] 2.2 将 tool event、activity、preferences/updater health facts 接入同一 mutation 流，确保一次逻辑更新产生有序 delta，并添加 producer adapter 测试。
-- [ ] 2.3 重构浏览器状态 WebSocket，使其协商 schema、先发送原子 snapshot、再发送 ordered delta，并覆盖 resync-required、slow subscriber 和 reload-required handler tests。
-- [ ] 2.4 让迁移期 `/api/sessions`、`/api/hosts`、tool/activity/health 读取从 canonical projection 派生，运行相关 Go tests 与 `go test -race` 验证无数据竞争。
+- [x] 2.1 将本机 discovery 与现有 host/session 聚合接入 coordinator，统一用 stable identity 生成 projection，并验证单机及两个 host 同名 session 的 snapshot。
+- [x] 2.2 将 tool event、activity、preferences/updater health facts 接入同一 mutation 流，确保一次逻辑更新产生有序 delta，并添加 producer adapter 测试。
+- [x] 2.3 重构浏览器状态 WebSocket，使其协商 schema、先发送原子 snapshot、再发送 ordered delta，并覆盖 resync-required、slow subscriber 和 reload-required handler tests。
+- [x] 2.4 让迁移期 `/api/sessions`、`/api/hosts`、tool/activity/health 读取从 canonical projection 派生，运行相关 Go tests 与 `go test -race` 验证无数据竞争。
 
 ## 3. 前端 Reducer 与连接生命周期
 
-- [ ] 3.1 配置 Vitest、jsdom 与 React Testing Library，加入 `test` npm script、StrictMode render helper、WebSocket/visibility/pageshow mock 和 fake-timer 基础设施，并以 reducer 与 Hook smoke tests 验证本地及 CI runner 可执行。
-- [ ] 3.2 实现 normalized application state reducer，支持 snapshot replace、ordered delta、duplicate ignore、gap/instance mismatch rehydrate，并添加 TypeScript unit tests。
-- [ ] 3.3 添加 application state provider 和 session/host selectors，迁移 Sidebar、Overview、StatusBar 与路由目标到 stable `host/session` identity，并验证同名 session 切换不会复用错误 Terminal target。
-- [ ] 3.4 迁移 tool event、activity、health consumers 与 session mutation pending 状态，移除可覆盖权威 revision 的独立轮询副本，并用 stale-response tests 验证旧 HTTP 响应无效。
-- [ ] 3.5 实现带 generation/disposed guard 的 browser connection controller、单 socket/单 timer 约束及 capped exponential backoff+jitter，并用 StrictMode、fake timer、visibility/pageshow Hook tests 验证无 ghost reconnect。
-- [ ] 3.6 接入 `connecting`、`rehydrating`、`ready`、`reconnecting`、`auth-required` 和 reload-required UI，验证 reconnect 只有在 snapshot 应用后才显示 ready。
+- [x] 3.1 配置 Vitest、jsdom 与 React Testing Library，加入 `test` npm script、StrictMode render helper、WebSocket/visibility/pageshow mock 和 fake-timer 基础设施，并以 reducer 与 Hook smoke tests 验证本地及 CI runner 可执行。
+- [x] 3.2 实现 normalized application state reducer，支持 snapshot replace、ordered delta、duplicate ignore、gap/instance mismatch rehydrate，并添加 TypeScript unit tests。
+- [x] 3.3 添加 application state provider 和 session/host selectors，迁移 Sidebar、Overview、StatusBar 与路由目标到 stable `host/session` identity，并验证同名 session 切换不会复用错误 Terminal target。
+- [x] 3.4 迁移 tool event、activity、health consumers 与 session mutation pending 状态，移除可覆盖权威 revision 的独立轮询副本，并用 stale-response tests 验证旧 HTTP 响应无效。
+- [x] 3.5 实现带 generation/disposed guard 的 browser connection controller、单 socket/单 timer 约束及 capped exponential backoff+jitter，并用 StrictMode、fake timer、visibility/pageshow Hook tests 验证无 ghost reconnect。
+- [x] 3.6 接入 `connecting`、`rehydrating`、`ready`、`reconnecting`、`auth-required` 和 reload-required UI，验证 reconnect 只有在 snapshot 应用后才显示 ready。
 
 ## 4. Push 与 PWA 生命周期
 
-- [ ] 4.1 实现 `0600`、同目录临时文件加 rename 的 durable Push subscription store，覆盖 startup reload、endpoint dedupe、unsubscribe、404/410 expiry 和损坏写入不覆盖旧文件。
-- [ ] 4.2 扩展 Push sender，使 payload 携带 stable host/session/window/pane/tool/status、tag 跨 host 唯一，并实时执行 Waiting/Error/Completed preferences；添加过滤与同名远端 session tests。
-- [ ] 4.3 重构 Service Worker/Push Hook 启动 reconciliation，只有浏览器 subscription 与 Hub 持久化均成功才报告 `subscribed`，并用 unit tests 覆盖 server failure、retry 与 unsubscribe 部分失败。
-- [ ] 4.4 更新 Service Worker 的 host-aware 同源导航和 malformed fallback，扩展 PWA tests 验证真实应用注册路径、network-only 行为及不同 host 通知不碰撞。
+- [x] 4.1 实现 `0600`、同目录临时文件加 rename 的 durable Push subscription store，覆盖 startup reload、endpoint dedupe、unsubscribe、404/410 expiry 和损坏写入不覆盖旧文件。
+- [x] 4.2 扩展 Push sender，使 payload 携带 stable host/session/window/pane/tool/status、tag 跨 host 唯一，并实时执行 Waiting/Error/Completed preferences；添加过滤与同名远端 session tests。
+- [x] 4.3 重构 Service Worker/Push Hook 启动 reconciliation，只有浏览器 subscription 与 Hub 持久化均成功才报告 `subscribed`，并用 unit tests 覆盖 server failure、retry 与 unsubscribe 部分失败。
+- [x] 4.4 更新 Service Worker 的 host-aware 同源导航和 malformed fallback，扩展 PWA tests 验证真实应用注册路径、network-only 行为及不同 host 通知不碰撞。
 
 ## 5. Fleet Health
 
-- [ ] 5.1 定义 host health facts、freshness threshold 和可组合 reason codes，实现 unknown、stale、offline、version-behind/ahead、explicit incompatible、healthy 分类并添加 table tests。
-- [ ] 5.2 通过现有 state/stats 数据路径汇集 role、version/commit、last sync、Agent/hook checks 与最近 updater outcome，不改 Peer 连接生命周期，并验证缺失 metadata 保持 unknown。
-- [ ] 5.3 实现 Fleet Health UI，以 stable host ID 展示摘要、全部 reason、原始证据和可复制 remediation，确保页面不执行命令且同名 host 保持独立。
-- [ ] 5.4 添加多 host browser/component tests，覆盖版本漂移、stale/offline、incompatible、rolled-back updater、duplicate display name 和 reconnect 后同 revision 刷新。
+- [x] 5.1 定义 host health facts、freshness threshold 和可组合 reason codes，实现 unknown、stale、offline、version-behind/ahead、explicit incompatible、healthy 分类并添加 table tests。
+- [x] 5.2 通过现有 state/stats 数据路径汇集 role、version/commit、last sync、Agent/hook checks 与最近 updater outcome，不改 Peer 连接生命周期，并验证缺失 metadata 保持 unknown。
+- [x] 5.3 实现 Fleet Health UI，以 stable host ID 展示摘要、全部 reason、原始证据和可复制 remediation，确保页面不执行命令且同名 host 保持独立。
+- [x] 5.4 添加多 host browser/component tests，覆盖版本漂移、stale/offline、incompatible、rolled-back updater、duplicate display name 和 reconnect 后同 revision 刷新。
 
 ## 6. Updater Transaction 与 Rollback
 
-- [ ] 6.1 实现 Go 内部 Sigstore checksum-bundle verifier、版本化 pinned trusted root，以及固定 issuer、`LosFurina/tmuxatlas` repository、`.github/workflows/goreleaser.yml` workflow 和目标 tag 的 identity policy；用 checked-in fixtures 覆盖 valid、invalid issuer/repository/workflow/tag、missing/malformed bundle 与 root rotation，并验证全部失败在 staging 前 fail closed。
-- [ ] 6.2 将 updater 拆为 verified staging、last-known-good backup 与 atomic replacement 阶段，添加 provenance/checksum/archive/permission/replace failure tests 验证当前 executable 不被破坏。
-- [ ] 6.3 实现 durable update transaction journal、previous release metadata 和中断 recovery，覆盖 staged/replaced/restarted/healthy/rolling-back/rolled-back 状态转换测试。
-- [ ] 6.4 为 pure Hub、standalone 与 Agent 的本地 Unix HTTP listener 增加 role/deployment/version/commit/instance/ready health response，并测试三种角色在真正 ready 前不会误报成功。
-- [ ] 6.5 扩展 systemd/launchd service discovery 与 updater health loop，验证 active、role、target version 和 bounded readiness timeout 后才 commit，并使用 fake service/probe 测试。
-- [ ] 6.6 实现自动 rollback、显式 rollback/recovery、`--no-restart` installed/running version 区分和 recent outcome 持久化，完成 restart failure、timeout、version mismatch、rollback success/failure 故障注入矩阵。
+- [x] 6.1 实现 Go 内部 Sigstore checksum-bundle verifier、版本化 pinned trusted root，以及固定 issuer、`LosFurina/tmuxatlas` repository、`.github/workflows/goreleaser.yml` workflow 和目标 tag 的 identity policy；用 checked-in fixtures 覆盖 valid、invalid issuer/repository/workflow/tag、missing/malformed bundle 与 root rotation，并验证全部失败在 staging 前 fail closed。
+- [x] 6.2 将 updater 拆为 verified staging、last-known-good backup 与 atomic replacement 阶段，添加 provenance/checksum/archive/permission/replace failure tests 验证当前 executable 不被破坏。
+- [x] 6.3 实现 durable update transaction journal、previous release metadata 和中断 recovery，覆盖 staged/replaced/restarted/healthy/rolling-back/rolled-back 状态转换测试。
+- [x] 6.4 为 pure Hub、standalone 与 Agent 的本地 Unix HTTP listener 增加 role/deployment/version/commit/instance/ready health response，并测试三种角色在真正 ready 前不会误报成功。
+- [x] 6.5 扩展 systemd/launchd service discovery 与 updater health loop，验证 active、role、target version 和 bounded readiness timeout 后才 commit，并使用 fake service/probe 测试。
+- [x] 6.6 实现自动 rollback、显式 rollback/recovery、`--no-restart` installed/running version 区分和 recent outcome 持久化，完成 restart failure、timeout、version mismatch、rollback success/failure 故障注入矩阵。
 
 ## 7. 移动端 Terminal
 
-- [ ] 7.1 实现可收起 touch Terminal toolbar 与 Esc、Tab、方向键、Ctrl/Alt one-shot/locked sequence 编码，添加输入单元测试和 target change modifier reset 测试。
-- [ ] 7.2 实现 generation-safe Copy/Paste 与软键盘控制，覆盖 selection、permission denied、empty clipboard、API unavailable 和 clipboard Promise 期间切换 session。
-- [ ] 7.3 将窄屏 Sidebar 改为可关闭 drawer，使 TopBar、Terminal、toolbar、modal、StatusBar 使用 safe-area inset 和 viewport-relative 尺寸，并用组件 viewport tests 验证横竖屏。
-- [ ] 7.4 接入 Visual Viewport 软键盘变化及 coalesced xterm fit/PTY resize，为所有 toolbar control 增加 accessible name/state 和 44×44 触控目标，并验证桌面键盘/selection/scrollback 无回归。
+- [x] 7.1 实现可收起 touch Terminal toolbar 与 Esc、Tab、方向键、Ctrl/Alt one-shot/locked sequence 编码，添加输入单元测试和 target change modifier reset 测试。
+- [x] 7.2 实现 generation-safe Copy/Paste 与软键盘控制，覆盖 selection、permission denied、empty clipboard、API unavailable 和 clipboard Promise 期间切换 session。
+- [x] 7.3 将窄屏 Sidebar 改为可关闭 drawer，使 TopBar、Terminal、toolbar、modal、StatusBar 使用 safe-area inset 和 viewport-relative 尺寸，并用组件 viewport tests 验证横竖屏。
+- [x] 7.4 接入 Visual Viewport 软键盘变化及 coalesced xterm fit/PTY resize，为所有 toolbar control 增加 accessible name/state 和 44×44 触控目标，并验证桌面键盘/selection/scrollback 无回归。
 
 ## 8. Self-host Fonts 与 Bundle
 
-- [ ] 8.1 移除 Google Fonts CSS/preconnect，vendor 实际使用的 WOFF2 字体及 license/source metadata，修正 bundled/system/generic font 设置映射并测试每个 bundled option 可加载。
-- [ ] 8.2 加入本地 Nerd Symbols Only 或可复现最小 subset、fallback font-family 和 glyph/license inventory tests，验证支持 glyph 不依赖系统 patched font。
-- [ ] 8.3 按 Login/Terminal 使用路径 lazy-load xterm 与非首屏字体，建立 version-controlled gzip/Brotli bundle budgets 和第三方字体请求拦截测试。
+- [x] 8.1 移除 Google Fonts CSS/preconnect，vendor 实际使用的 WOFF2 字体及 license/source metadata，修正 bundled/system/generic font 设置映射并测试每个 bundled option 可加载。
+- [x] 8.2 加入本地 Nerd Symbols Only 或可复现最小 subset、fallback font-family 和 glyph/license inventory tests，验证支持 glyph 不依赖系统 patched font。
+- [x] 8.3 按 Login/Terminal 使用路径 lazy-load xterm 与非首屏字体，建立 version-controlled gzip/Brotli bundle budgets 和第三方字体请求拦截测试。
 
 ## 9. 浏览器测试与 CI
 
