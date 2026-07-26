@@ -69,3 +69,33 @@ The hub SHALL keep peer pairing, control, and PTY relay routes usable through a 
 #### Scenario: Peer PTY stream through gateway
 - **WHEN** a gateway forwards `/ws/peer-pty` including the stream query parameter
 - **THEN** the hub relays the requested PTY stream
+
+### Requirement: Outbound-only headless Agent
+TmuxAtlas SHALL provide a dedicated Agent runtime that observes the current
+user's tmux sessions and connects to the configured Hub without opening a TCP
+listener or initializing the Web UI, Passkeys, WebPush, or Hub-side handlers.
+The Agent SHALL retain a user-private Unix socket for local notification hooks.
+
+#### Scenario: Start a paired Agent
+- **WHEN** an operator starts `tmuxatlas agent` with a trusted Hub URL
+- **THEN** the Agent synchronizes state over outbound WSS and exposes no TCP listening socket
+
+#### Scenario: Local hook notification
+- **WHEN** an AI tool hook posts an event through the Agent's Unix socket
+- **THEN** the Agent records and forwards the event to the authenticated Hub connection
+
+### Requirement: Agent user service
+TmuxAtlas SHALL install the headless Agent as a same-user systemd or launchd
+service with automatic restart and the paired Hub URL.
+
+#### Scenario: Linux Agent installation
+- **WHEN** an operator installs Agent mode on Linux
+- **THEN** TmuxAtlas enables `tmuxatlas-agent.service` for the current user
+
+#### Scenario: macOS Agent installation
+- **WHEN** an operator installs Agent mode on macOS
+- **THEN** TmuxAtlas loads `com.tmuxatlas.agent` for the current user
+
+#### Scenario: Agent update
+- **WHEN** the updater replaces the executable used by a running Agent service
+- **THEN** it restarts that Agent service without reporting browser-session invalidation

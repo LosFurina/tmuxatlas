@@ -17,6 +17,7 @@ import (
 
 	"github.com/LosFurina/tmuxatlas/pkg/common"
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
+	"github.com/LosFurina/tmuxatlas/pkg/paths"
 	"github.com/LosFurina/tmuxatlas/pkg/socket"
 )
 
@@ -154,9 +155,14 @@ func pairWithHub(hubAddr, code string) error {
 	if err := peerStore.Add(peer); err != nil {
 		return fmt.Errorf("store hub peer: %w", err)
 	}
+	if err := paths.SaveEnvValue("TMUXATLAS_HUB", hubBaseURL); err != nil {
+		return fmt.Errorf("save hub URL: %w", err)
+	}
 
 	fmt.Printf("Paired with \"%s\" successfully!\n", result.Name)
-	fmt.Printf("\nTo connect, run:\n  tmuxatlas server --hub %s\n", hubBaseURL)
+	fmt.Printf("Saved Hub URL in ~/.config/tmuxatlas/.env\n")
+	fmt.Printf("\nTo connect now:\n  tmuxatlas agent\n")
+	fmt.Printf("\nTo install the background service:\n  tmuxatlas install --mode agent\n")
 
 	return nil
 }

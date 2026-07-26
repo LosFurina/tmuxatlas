@@ -110,30 +110,41 @@ func discoverSystemdService() (*serviceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	definition := filepath.Join(configDir, "systemd", "user", "tmuxatlas.service")
-	raw, err := os.ReadFile(definition)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	var inactive *serviceInfo
+	for _, name := range []string{"tmuxatlas-agent.service", "tmuxatlas.service"} {
+		definition := filepath.Join(configDir, "systemd", "user", name)
+		raw, readErr := os.ReadFile(definition)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+		executable, parseErr := parseSystemdExecStart(string(raw))
+		if parseErr != nil {
+			return nil, fmt.Errorf("%s: %w", definition, parseErr)
+		}
+		active := exec.Command("systemctl", "--user", "is-active", "--quiet", name).Run() == nil
+		serviceName := name
+		service := &serviceInfo{
+			kind: "systemd", name: serviceName, definition: definition,
+			executable: executable, active: active,
+			restart: func(ctx context.Context) error {
+				output, restartErr := exec.CommandContext(ctx, "systemctl", "--user", "restart", serviceName).CombinedOutput()
+				if restartErr != nil {
+					return fmt.Errorf("systemctl restart: %w: %s", restartErr, strings.TrimSpace(string(output)))
+				}
+				return nil
+			},
+		}
+		if active {
+			return service, nil
+		}
+		if inactive == nil {
+			inactive = service
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	executable, err := parseSystemdExecStart(string(raw))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", definition, err)
-	}
-	active := exec.Command("systemctl", "--user", "is-active", "--quiet", "tmuxatlas.service").Run() == nil
-	return &serviceInfo{
-		kind: "systemd", name: "tmuxatlas.service", definition: definition,
-		executable: executable, active: active,
-		restart: func(ctx context.Context) error {
-			output, err := exec.CommandContext(ctx, "systemctl", "--user", "restart", "tmuxatlas.service").CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(string(output)))
-			}
-			return nil
-		},
-	}, nil
+	return inactive, nil
 }
 
 func discoverLaunchdService() (*serviceInfo, error) {
@@ -141,31 +152,43 @@ func discoverLaunchdService() (*serviceInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	definition := filepath.Join(home, "Library", "LaunchAgents", "com.tmuxatlas.server.plist")
-	raw, err := os.ReadFile(definition)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	var inactive *serviceInfo
+	for _, label := range []string{"com.tmuxatlas.agent", "com.tmuxatlas.server"} {
+		definition := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+		raw, readErr := os.ReadFile(definition)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+		executable, parseErr := parseLaunchdExecutable(raw)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%s: %w", definition, parseErr)
+		}
+		target := fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
+		active := exec.Command("launchctl", "print", target).Run() == nil
+		serviceLabel := label
+		serviceTarget := target
+		service := &serviceInfo{
+			kind: "launchd", name: serviceLabel, definition: definition,
+			executable: executable, active: active,
+			restart: func(ctx context.Context) error {
+				output, restartErr := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", serviceTarget).CombinedOutput()
+				if restartErr != nil {
+					return fmt.Errorf("launchctl kickstart: %w: %s", restartErr, strings.TrimSpace(string(output)))
+				}
+				return nil
+			},
+		}
+		if active {
+			return service, nil
+		}
+		if inactive == nil {
+			inactive = service
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	executable, err := parseLaunchdExecutable(raw)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", definition, err)
-	}
-	target := fmt.Sprintf("gui/%d/com.tmuxatlas.server", os.Getuid())
-	active := exec.Command("launchctl", "print", target).Run() == nil
-	return &serviceInfo{
-		kind: "launchd", name: "com.tmuxatlas.server", definition: definition,
-		executable: executable, active: active,
-		restart: func(ctx context.Context) error {
-			output, err := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", target).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("launchctl kickstart: %w: %s", err, strings.TrimSpace(string(output)))
-			}
-			return nil
-		},
-	}, nil
+	return inactive, nil
 }
 
 func discoverService() (*serviceInfo, error) {

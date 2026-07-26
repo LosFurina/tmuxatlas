@@ -103,50 +103,65 @@ func runChecks() []check {
 	checks = append(checks, check{levelOK, "config directory", configDir})
 	checks = append(checks, fileModeCheck("environment file", filepath.Join(configDir, ".env"), 0o600))
 
-	publicURL := firstNonEmpty(os.Getenv("TMUXATLAS_PUBLIC_URL"), "http://localhost:7654")
-	checks = append(checks, publicURLCheck(publicURL))
-	sessionTTL := firstNonEmpty(os.Getenv("TMUXATLAS_SESSION_TTL"), "24h")
-	checks = append(checks, sessionTTLCheck(sessionTTL))
-
-	passkeyPath := filepath.Join(configDir, "passkeys.json")
-	passkeyCheck := fileModeCheck("Passkey store", passkeyPath, 0o600)
-	if passkeyCheck.Level == levelOK {
-		raw, readErr := os.ReadFile(passkeyPath)
-		var stored struct {
-			RPID        string            `json:"rp_id"`
-			Origin      string            `json:"origin"`
-			Credentials []json.RawMessage `json:"credentials"`
-		}
-		if readErr != nil || json.Unmarshal(raw, &stored) != nil {
-			passkeyCheck = check{levelFail, "Passkey store", "passkeys.json is not valid JSON"}
-		} else if len(stored.Credentials) == 0 {
-			passkeyCheck = check{levelWarn, "Passkey store", "no Passkey has been enrolled yet"}
-		} else {
-			passkeyCheck.Message = fmt.Sprintf("%d credential(s), RP ID %s", len(stored.Credentials), stored.RPID)
-		}
-	}
-	checks = append(checks, passkeyCheck)
-	if _, err := os.Stat(filepath.Join(configDir, "auth.json")); err == nil {
-		checks = append(checks, check{levelWarn, "legacy password", "auth.json is ignored and can be removed after Passkey login is verified"})
-	}
-
-	listen := firstNonEmpty(os.Getenv("TMUXATLAS_LISTEN"), "127.0.0.1:7654")
-	connection, err := net.DialTimeout("tcp", listen, 300*time.Millisecond)
-	if err != nil {
-		checks = append(checks, check{levelWarn, "server", "not listening on " + listen})
+	agentMode := os.Getenv("TMUXATLAS_HUB") != ""
+	if agentMode {
+		hubCheck := publicURLCheck(os.Getenv("TMUXATLAS_HUB"))
+		hubCheck.Name = "Hub URL"
+		checks = append(checks, hubCheck)
 	} else {
-		connection.Close()
-		checks = append(checks, check{levelOK, "server", "listening on " + listen})
+		publicURL := firstNonEmpty(os.Getenv("TMUXATLAS_PUBLIC_URL"), "http://localhost:7654")
+		checks = append(checks, publicURLCheck(publicURL))
+		sessionTTL := firstNonEmpty(os.Getenv("TMUXATLAS_SESSION_TTL"), "24h")
+		checks = append(checks, sessionTTLCheck(sessionTTL))
+
+		passkeyPath := filepath.Join(configDir, "passkeys.json")
+		passkeyCheck := fileModeCheck("Passkey store", passkeyPath, 0o600)
+		if passkeyCheck.Level == levelOK {
+			raw, readErr := os.ReadFile(passkeyPath)
+			var stored struct {
+				RPID        string            `json:"rp_id"`
+				Origin      string            `json:"origin"`
+				Credentials []json.RawMessage `json:"credentials"`
+			}
+			if readErr != nil || json.Unmarshal(raw, &stored) != nil {
+				passkeyCheck = check{levelFail, "Passkey store", "passkeys.json is not valid JSON"}
+			} else if len(stored.Credentials) == 0 {
+				passkeyCheck = check{levelWarn, "Passkey store", "no Passkey has been enrolled yet"}
+			} else {
+				passkeyCheck.Message = fmt.Sprintf("%d credential(s), RP ID %s", len(stored.Credentials), stored.RPID)
+			}
+		}
+		checks = append(checks, passkeyCheck)
+		if _, err := os.Stat(filepath.Join(configDir, "auth.json")); err == nil {
+			checks = append(checks, check{levelWarn, "legacy password", "auth.json is ignored and can be removed after Passkey login is verified"})
+		}
+
+		listen := firstNonEmpty(os.Getenv("TMUXATLAS_LISTEN"), "127.0.0.1:7654")
+		connection, err := net.DialTimeout("tcp", listen, 300*time.Millisecond)
+		if err != nil {
+			checks = append(checks, check{levelWarn, "server", "not listening on " + listen})
+		} else {
+			connection.Close()
+			checks = append(checks, check{levelOK, "server", "listening on " + listen})
+		}
 	}
 
 	servicePath := ""
 	switch runtime.GOOS {
 	case "darwin":
 		home, _ := os.UserHomeDir()
-		servicePath = filepath.Join(home, "Library", "LaunchAgents", "com.tmuxatlas.server.plist")
+		label := "com.tmuxatlas.server.plist"
+		if agentMode {
+			label = "com.tmuxatlas.agent.plist"
+		}
+		servicePath = filepath.Join(home, "Library", "LaunchAgents", label)
 	case "linux":
 		if configHome, err := os.UserConfigDir(); err == nil {
-			servicePath = filepath.Join(configHome, "systemd", "user", "tmuxatlas.service")
+			name := "tmuxatlas.service"
+			if agentMode {
+				name = "tmuxatlas-agent.service"
+			}
+			servicePath = filepath.Join(configHome, "systemd", "user", name)
 		}
 	}
 	if servicePath != "" {

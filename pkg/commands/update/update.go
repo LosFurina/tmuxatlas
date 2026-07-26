@@ -344,7 +344,9 @@ func execute(ctx context.Context, c *cli.Command) error {
 			return fmt.Errorf("binary updated, but service restart failed: %w", err)
 		}
 		fmt.Printf("Restarted %s successfully.\n", service.name)
-		fmt.Println("Existing in-memory browser sessions were cleared; sign in with your Passkey again.")
+		if !strings.Contains(service.name, "agent") {
+			fmt.Println("Existing in-memory browser sessions were cleared; sign in with your Passkey again.")
+		}
 	}
 	return nil
 }

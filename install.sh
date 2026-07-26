@@ -38,6 +38,37 @@ validate_public_url() {
 	return 1
 }
 
+prompt_role() {
+	role="${TMUXATLAS_ROLE:-}"
+	if [ -z "$role" ]; then
+		if ! (: </dev/tty) 2>/dev/null; then
+			role="binary"
+			log "No interactive terminal; installing the binary only."
+			return
+		fi
+		while :; do
+			printf '%s\n' 'How will this machine run TmuxAtlas?' >/dev/tty
+			printf '%s\n' '  1) Hub    — Web UI and inbound peer connections' >/dev/tty
+			printf '%s\n' '  2) Agent  — outbound-only tmux agent' >/dev/tty
+			printf '%s\n' '  3) Binary — install without configuration or service' >/dev/tty
+			printf 'Select [1-3]: ' >/dev/tty
+			IFS= read -r answer </dev/tty || answer=""
+			case "$answer" in
+				1 | hub | Hub) role="hub"; break ;;
+				2 | agent | Agent) role="agent"; break ;;
+				3 | binary | Binary) role="binary"; break ;;
+				*) printf 'Enter 1, 2, or 3.\n' >/dev/tty ;;
+			esac
+		done
+	fi
+	case "$role" in
+		hub | server) role="hub" ;;
+		agent) ;;
+		binary | none) role="binary" ;;
+		*) fail "TMUXATLAS_ROLE must be hub, agent, or binary" ;;
+	esac
+}
+
 prompt_public_url() {
 	public_url="${TMUXATLAS_PUBLIC_URL:-}"
 
@@ -58,6 +89,37 @@ prompt_public_url() {
 	fi
 }
 
+prompt_hub_url() {
+	hub_url="${TMUXATLAS_HUB:-}"
+	if [ -z "$hub_url" ]; then
+		if ! (: </dev/tty) 2>/dev/null; then
+			fail "TMUXATLAS_HUB is required for agent installation"
+		fi
+		while :; do
+			printf 'Trusted Hub URL (for example https://tmuxatlas.example.com): ' >/dev/tty
+			IFS= read -r hub_url </dev/tty || hub_url=""
+			if validate_public_url "$hub_url"; then
+				break
+			fi
+			printf '%s\n' 'Enter an HTTPS URL, or an HTTP localhost URL for local testing.' >/dev/tty
+		done
+	elif ! validate_public_url "$hub_url"; then
+		fail "TMUXATLAS_HUB must be HTTPS, or HTTP on localhost"
+	fi
+}
+
+prompt_pair_code() {
+	pair_code="${TMUXATLAS_PAIR_CODE:-}"
+	if [ -z "$pair_code" ]; then
+		if ! (: </dev/tty) 2>/dev/null; then
+			fail "TMUXATLAS_PAIR_CODE is required for agent installation"
+		fi
+		printf 'One-time pairing code from the Hub: ' >/dev/tty
+		IFS= read -r pair_code </dev/tty || pair_code=""
+	fi
+	[ -n "$pair_code" ] || fail "a pairing code is required for agent installation"
+}
+
 save_environment() {
 	config_dir="${HOME}/.config/tmuxatlas"
 	env_file="${config_dir}/.env"
@@ -65,14 +127,20 @@ save_environment() {
 	temp_env="${temp_dir}/tmuxatlas.env"
 
 	if [ -f "$env_file" ]; then
-		awk '$0 !~ /^[[:space:]]*TMUXATLAS_PUBLIC_URL=/' "$env_file" >"$temp_env"
+		case "$role" in
+			hub) awk '$0 !~ /^[[:space:]]*TMUXATLAS_PUBLIC_URL=/' "$env_file" >"$temp_env" ;;
+			agent) awk '$0 !~ /^[[:space:]]*TMUXATLAS_HUB=/' "$env_file" >"$temp_env" ;;
+		esac
 	else
 		: >"$temp_env"
 	fi
-	printf 'TMUXATLAS_PUBLIC_URL=%s\n' "$public_url" >>"$temp_env"
+	case "$role" in
+		hub) printf 'TMUXATLAS_PUBLIC_URL=%s\n' "$public_url" >>"$temp_env" ;;
+		agent) printf 'TMUXATLAS_HUB=%s\n' "$hub_url" >>"$temp_env" ;;
+	esac
 	umask 077
 	install -m 0600 "$temp_env" "$env_file"
-	log "Saved TMUXATLAS_PUBLIC_URL in ${env_file}"
+	log "Saved ${role} configuration in ${env_file}"
 }
 
 configure_tmux() {
@@ -137,7 +205,14 @@ prompt_tmux_configuration() {
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
-prompt_public_url
+prompt_role
+case "$role" in
+	hub) prompt_public_url ;;
+	agent)
+		prompt_hub_url
+		prompt_pair_code
+		;;
+esac
 
 case "$(uname -s)" in
 	Darwin) os="darwin" ;;
@@ -194,7 +269,9 @@ tar -xzf "${temp_dir}/${archive}" -C "$temp_dir"
 
 mkdir -p "$install_dir"
 install -m 0755 "${temp_dir}/tmuxatlas" "${install_dir}/tmuxatlas"
-save_environment
+if [ "$role" != "binary" ]; then
+	save_environment
+fi
 
 log "Installed ${install_dir}/tmuxatlas"
 case ":${PATH}:" in
@@ -202,4 +279,16 @@ case ":${PATH}:" in
 	*) log "Add ${install_dir} to PATH before running tmuxatlas." ;;
 esac
 prompt_tmux_configuration
-log "Run 'tmuxatlas install --public-url ${public_url}' if you also want a systemd/launchd user service."
+
+case "$role" in
+	hub)
+		"${install_dir}/tmuxatlas" install --mode server --public-url "$public_url"
+		;;
+	agent)
+		"${install_dir}/tmuxatlas" pair --hub "$hub_url" --code "$pair_code"
+		"${install_dir}/tmuxatlas" install --mode agent --hub "$hub_url"
+		;;
+	binary)
+		log "Binary-only installation complete; no configuration or service was created."
+		;;
+esac

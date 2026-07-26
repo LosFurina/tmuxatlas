@@ -39,12 +39,16 @@ Review [install.sh](install.sh), then run:
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh | sh
 ```
 
-The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Release, verifies its SHA-256 checksum, and installs `tmuxatlas` to `~/.local/bin`. When running interactively, it also asks whether to enable tmux mouse scrolling in `~/.tmux.conf`. The managed block is only added after confirmation and can be safely skipped when mouse support is already enabled.
+The script first asks whether this machine is a Hub, an outbound-only Agent, or
+a binary-only installation. It then asks only for the URL relevant to that
+role, downloads the newest GitHub Release, verifies its SHA-256 checksum, and
+installs `tmuxatlas` to `~/.local/bin`. Hub and Agent roles are installed as a
+systemd/launchd user service; Agent installation also completes pairing.
 
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.4.0 \
+TMUXATLAS_VERSION=v0.5.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -53,27 +57,22 @@ For unattended installs, choose explicitly instead of waiting for a prompt:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_ROLE=hub \
   TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
   TMUXATLAS_CONFIGURE_TMUX=yes sh
 ```
 
-Set `TMUXATLAS_CONFIGURE_TMUX=no` to leave `.tmux.conf` untouched, or set
-`TMUXATLAS_TMUX_CONF` to configure a non-default path.
+For an unattended Agent installation:
 
-The interactive installer requires the final browser-facing URL and saves it
-to `~/.config/tmuxatlas/.env`. Non-interactive installation must provide
-`TMUXATLAS_PUBLIC_URL`. HTTPS is required for remote URLs; HTTP is accepted only
-for localhost development.
-
-To register the installed binary as a user service afterward:
-
-```bash
-tmuxatlas install --public-url https://tmuxatlas.example.com
+```sh
+curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_ROLE=agent \
+  TMUXATLAS_HUB=https://tmuxatlas.example.com \
+  TMUXATLAS_PAIR_CODE=WORD-WORD-WORD sh
 ```
 
-The install command also reads the saved value from
-`~/.config/tmuxatlas/.env`, so the flag can be omitted after using the
-interactive installer.
+Set `TMUXATLAS_ROLE=binary` for no configuration or service. Set
+`TMUXATLAS_CONFIGURE_TMUX=no` to leave `.tmux.conf` untouched.
 
 ### Update and diagnose
 

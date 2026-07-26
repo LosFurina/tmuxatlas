@@ -1,6 +1,11 @@
 package install
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"text/template"
+)
 
 func TestValidatePublicURL(t *testing.T) {
 	for _, test := range []struct {
@@ -20,6 +25,40 @@ func TestValidatePublicURL(t *testing.T) {
 			_, err := validatePublicURL(test.value)
 			if (err == nil) != test.ok {
 				t.Fatalf("validatePublicURL(%q) error = %v, want ok=%v", test.value, err, test.ok)
+			}
+		})
+	}
+}
+
+func TestAgentServiceTemplatesAreHeadless(t *testing.T) {
+	config := serviceConfig{
+		BinaryPath: "/home/user/.local/bin/tmuxatlas",
+		ExecStart:  "/home/user/.local/bin/tmuxatlas agent",
+		Path:       "/usr/bin", LogDir: "/tmp",
+		Description: "TmuxAtlas agent", Command: "agent",
+		Label: "com.tmuxatlas.agent", LogName: "com.tmuxatlas.agent",
+		EnvironmentName: "TMUXATLAS_HUB", EnvironmentValue: "https://hub.example.com",
+	}
+	for name, source := range map[string]string{"systemd": systemdUnit, "launchd": launchdPlist} {
+		t.Run(name, func(t *testing.T) {
+			var output bytes.Buffer
+			tmpl, err := template.New(name).Parse(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tmpl.Execute(&output, config); err != nil {
+				t.Fatal(err)
+			}
+			rendered := output.String()
+			for _, required := range []string{"agent", "TMUXATLAS_HUB", "https://hub.example.com"} {
+				if !strings.Contains(rendered, required) {
+					t.Fatalf("rendered service does not contain %q:\n%s", required, rendered)
+				}
+			}
+			for _, forbidden := range []string{"TMUXATLAS_PUBLIC_URL", "passkey", "127.0.0.1:7654"} {
+				if strings.Contains(rendered, forbidden) {
+					t.Fatalf("headless service contains %q:\n%s", forbidden, rendered)
+				}
 			}
 		})
 	}

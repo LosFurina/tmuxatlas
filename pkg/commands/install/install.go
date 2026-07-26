@@ -17,7 +17,7 @@ import (
 )
 
 const systemdUnit = `[Unit]
-Description=TmuxAtlas - Web dashboard for tmux sessions
+Description={{.Description}}
 After=default.target
 
 [Service]
@@ -26,7 +26,7 @@ ExecStart={{.ExecStart}}
 Restart=on-failure
 RestartSec=5
 Environment=PATH={{.Path}}
-Environment=TMUXATLAS_PUBLIC_URL={{.PublicURL}}
+Environment={{.EnvironmentName}}={{.EnvironmentValue}}
 
 [Install]
 WantedBy=default.target
@@ -37,37 +37,81 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.tmuxatlas.server</string>
+	<string>{{.Label}}</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>{{.BinaryPath}}</string>
-		<string>server</string>
+		<string>{{.Command}}</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>{{.LogDir}}/tmuxatlas.stdout.log</string>
+	<string>{{.LogDir}}/{{.LogName}}.stdout.log</string>
 	<key>StandardErrorPath</key>
-	<string>{{.LogDir}}/tmuxatlas.stderr.log</string>
+	<string>{{.LogDir}}/{{.LogName}}.stderr.log</string>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
 		<string>{{.Path}}</string>
-		<key>TMUXATLAS_PUBLIC_URL</key>
-		<string>{{.PublicURL}}</string>
+		<key>{{.EnvironmentName}}</key>
+		<string>{{.EnvironmentValue}}</string>
 	</dict>
 </dict>
 </plist>
 `
 
 type serviceConfig struct {
-	BinaryPath string
-	ExecStart  string
-	Path       string
-	LogDir     string
-	PublicURL  string
+	BinaryPath       string
+	ExecStart        string
+	Path             string
+	LogDir           string
+	Description      string
+	Command          string
+	Label            string
+	LogName          string
+	EnvironmentName  string
+	EnvironmentValue string
+}
+
+type serviceRole struct {
+	mode             string
+	command          string
+	systemdName      string
+	launchdLabel     string
+	description      string
+	environmentName  string
+	environmentValue string
+}
+
+func roleFromCommand(c *cli.Command) (serviceRole, error) {
+	switch c.String("mode") {
+	case "server", "hub":
+		publicURL, err := validatePublicURL(c.String("public-url"))
+		if err != nil {
+			return serviceRole{}, err
+		}
+		return serviceRole{
+			mode: "server", command: "server", systemdName: "tmuxatlas.service",
+			launchdLabel:    "com.tmuxatlas.server",
+			description:     "TmuxAtlas - Web dashboard for tmux sessions",
+			environmentName: "TMUXATLAS_PUBLIC_URL", environmentValue: publicURL,
+		}, nil
+	case "agent":
+		hubURL, err := validatePublicURL(c.String("hub"))
+		if err != nil {
+			return serviceRole{}, fmt.Errorf("hub URL: %w", err)
+		}
+		return serviceRole{
+			mode: "agent", command: "agent", systemdName: "tmuxatlas-agent.service",
+			launchdLabel:    "com.tmuxatlas.agent",
+			description:     "TmuxAtlas - Headless tmux agent",
+			environmentName: "TMUXATLAS_HUB", environmentValue: hubURL,
+		}, nil
+	default:
+		return serviceRole{}, fmt.Errorf("mode must be server or agent")
+	}
 }
 
 func validatePublicURL(raw string) (string, error) {
@@ -103,7 +147,7 @@ func getBinaryPath() (string, error) {
 }
 
 func installLinux(ctx context.Context, c *cli.Command) error {
-	publicURL, err := validatePublicURL(c.String("public-url"))
+	role, err := roleFromCommand(c)
 	if err != nil {
 		return err
 	}
@@ -118,17 +162,16 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	}
 
 	unitDir := filepath.Join(configDir, "systemd", "user")
-	unitPath := filepath.Join(unitDir, "tmuxatlas.service")
+	unitPath := filepath.Join(unitDir, role.systemdName)
 
 	if err := os.MkdirAll(unitDir, 0755); err != nil {
 		return fmt.Errorf("could not create systemd user directory: %w", err)
 	}
 
 	cfg := serviceConfig{
-		BinaryPath: binPath,
-		ExecStart:  binPath + " server",
-		Path:       os.Getenv("PATH"),
-		PublicURL:  publicURL,
+		BinaryPath: binPath, ExecStart: binPath + " " + role.command,
+		Path: os.Getenv("PATH"), Description: role.description,
+		EnvironmentName: role.environmentName, EnvironmentValue: role.environmentValue,
 	}
 
 	tmpl, err := template.New("systemd").Parse(systemdUnit)
@@ -148,6 +191,12 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 
 	fmt.Printf("Wrote %s\n", unitPath)
 
+	otherService := "tmuxatlas.service"
+	if role.mode == "server" {
+		otherService = "tmuxatlas-agent.service"
+	}
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", otherService).Run()
+
 	// Stop the pre-rename service so it cannot contend for the same port.
 	legacyUnitPath := filepath.Join(unitDir, "guppi.service")
 	if _, err := os.Stat(legacyUnitPath); err == nil {
@@ -160,21 +209,25 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("systemctl daemon-reload failed: %w", err)
 	}
 
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", "tmuxatlas.service").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", "--now", role.systemdName).Run(); err != nil {
 		return fmt.Errorf("systemctl enable failed: %w", err)
 	}
 
 	fmt.Println("Service enabled and started (systemctl --user)")
 	fmt.Println()
-	fmt.Println("  Status:   systemctl --user status tmuxatlas")
-	fmt.Println("  Logs:     journalctl --user -u tmuxatlas -f")
-	fmt.Println("  Restart:  systemctl --user restart tmuxatlas")
-	fmt.Printf("  Web UI:   %s\n", publicURL)
+	fmt.Printf("  Status:   systemctl --user status %s\n", role.systemdName)
+	fmt.Printf("  Logs:     journalctl --user -u %s -f\n", role.systemdName)
+	fmt.Printf("  Restart:  systemctl --user restart %s\n", role.systemdName)
+	if role.mode == "server" {
+		fmt.Printf("  Web UI:   %s\n", role.environmentValue)
+	} else {
+		fmt.Printf("  Hub:      %s\n", role.environmentValue)
+	}
 	return nil
 }
 
 func installDarwin(ctx context.Context, c *cli.Command) error {
-	publicURL, err := validatePublicURL(c.String("public-url"))
+	role, err := roleFromCommand(c)
 	if err != nil {
 		return err
 	}
@@ -189,7 +242,7 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 	}
 
 	agentDir := filepath.Join(home, "Library", "LaunchAgents")
-	plistPath := filepath.Join(agentDir, "com.tmuxatlas.server.plist")
+	plistPath := filepath.Join(agentDir, role.launchdLabel+".plist")
 	logDir := filepath.Join(home, "Library", "Logs")
 
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -197,10 +250,10 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 	}
 
 	cfg := serviceConfig{
-		BinaryPath: binPath,
-		Path:       os.Getenv("PATH"),
-		LogDir:     logDir,
-		PublicURL:  publicURL,
+		BinaryPath: binPath, Path: os.Getenv("PATH"), LogDir: logDir,
+		Command: role.command, Label: role.launchdLabel,
+		LogName: role.launchdLabel, EnvironmentName: role.environmentName,
+		EnvironmentValue: role.environmentValue,
 	}
 
 	tmpl, err := template.New("launchd").Parse(launchdPlist)
@@ -220,6 +273,13 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 
 	fmt.Printf("Wrote %s\n", plistPath)
 
+	otherLabel := "com.tmuxatlas.server"
+	if role.mode == "server" {
+		otherLabel = "com.tmuxatlas.agent"
+	}
+	otherPath := filepath.Join(agentDir, otherLabel+".plist")
+	_ = exec.CommandContext(ctx, "launchctl", "unload", "-w", otherPath).Run()
+
 	// Stop the pre-rename service while retaining its plist for rollback.
 	legacyPlistPath := filepath.Join(agentDir, "com.guppi.server.plist")
 	if _, err := os.Stat(legacyPlistPath); err == nil {
@@ -234,10 +294,14 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 
 	fmt.Println("Service loaded and started (launchctl)")
 	fmt.Println()
-	fmt.Println("  Status:   launchctl list com.tmuxatlas.server")
-	fmt.Printf("  Logs:     tail -f %s/tmuxatlas.stderr.log\n", cfg.LogDir)
-	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/com.tmuxatlas.server\n")
-	fmt.Printf("  Web UI:   %s\n", publicURL)
+	fmt.Printf("  Status:   launchctl list %s\n", role.launchdLabel)
+	fmt.Printf("  Logs:     tail -f %s/%s.stderr.log\n", cfg.LogDir, cfg.LogName)
+	fmt.Printf("  Restart:  launchctl kickstart -k gui/$(id -u)/%s\n", role.launchdLabel)
+	if role.mode == "server" {
+		fmt.Printf("  Web UI:   %s\n", role.environmentValue)
+	} else {
+		fmt.Printf("  Hub:      %s\n", role.environmentValue)
+	}
 	return nil
 }
 
@@ -258,10 +322,14 @@ func uninstallLinux(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("could not determine config directory: %w", err)
 	}
 
-	unitPath := filepath.Join(configDir, "systemd", "user", "tmuxatlas.service")
+	serviceName := "tmuxatlas.service"
+	if c.String("mode") == "agent" {
+		serviceName = "tmuxatlas-agent.service"
+	}
+	unitPath := filepath.Join(configDir, "systemd", "user", serviceName)
 
 	// Disable and stop
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", "tmuxatlas.service").Run()
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", serviceName).Run()
 
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("could not remove unit file: %w", err)
@@ -280,7 +348,11 @@ func uninstallDarwin(ctx context.Context, c *cli.Command) error {
 		return fmt.Errorf("could not determine home directory: %w", err)
 	}
 
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", "com.tmuxatlas.server.plist")
+	label := "com.tmuxatlas.server"
+	if c.String("mode") == "agent" {
+		label = "com.tmuxatlas.agent"
+	}
+	plistPath := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 
 	// Unload the agent
 	_ = exec.CommandContext(ctx, "launchctl", "unload", "-w", plistPath).Run()
@@ -311,16 +383,24 @@ func init() {
 		Usage: "install TmuxAtlas as a user service for auto-start",
 		Description: `Install TmuxAtlas to start automatically on login.
 
-On Linux, installs a systemd user unit (~/.config/systemd/user/tmuxatlas.service).
-On macOS, installs a launchd plist (~/Library/LaunchAgents/com.tmuxatlas.server.plist).
+Server mode installs tmuxatlas.service or com.tmuxatlas.server.
+Agent mode installs tmuxatlas-agent.service or com.tmuxatlas.agent and opens no TCP listener.
 
 Use "tmuxatlas install" to install and enable, "tmuxatlas uninstall" to remove.`,
 		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name: "mode", Usage: "Service role: server or agent",
+				Value: "server", Sources: cli.EnvVars("TMUXATLAS_ROLE"),
+			},
 			&cli.StringFlag{
 				Name:    "public-url",
 				Usage:   "Final browser-facing URL used for Passkeys",
 				Sources: cli.EnvVars("TMUXATLAS_PUBLIC_URL"),
 				Value:   "http://localhost:7654",
+			},
+			&cli.StringFlag{
+				Name: "hub", Usage: "Trusted Hub URL for agent mode",
+				Sources: cli.EnvVars("TMUXATLAS_HUB"),
 			},
 		},
 		Action: installExecute,
@@ -331,8 +411,10 @@ Use "tmuxatlas install" to install and enable, "tmuxatlas uninstall" to remove.`
 		Usage: "remove TmuxAtlas user service",
 		Description: `Remove the TmuxAtlas auto-start service.
 
-On Linux, disables and removes the systemd user unit.
-On macOS, unloads and removes the launchd plist.`,
+Select the server or agent service with --mode.`,
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "mode", Usage: "Service role: server or agent", Value: "server"},
+		},
 		Action: uninstallExecute,
 	}
 

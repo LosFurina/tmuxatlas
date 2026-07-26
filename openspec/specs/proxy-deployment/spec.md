@@ -69,3 +69,21 @@ The project SHALL document supported Cloudflare Tunnel and Nginx+ACME deployment
 #### Scenario: Nginx deployment
 - **WHEN** an operator follows the Nginx example
 - **THEN** Nginx terminates trusted TLS and forwards HTTP plus WebSocket upgrade headers with a long-lived read timeout
+
+### Requirement: Role-aware installation
+The one-line installer SHALL ask for the machine role before requesting a URL.
+Hub installation SHALL request and persist a browser-facing public URL. Agent
+installation SHALL request and persist only the Hub URL and pairing code.
+Binary-only installation SHALL not create configuration or a user service.
+
+#### Scenario: Interactive Hub installation
+- **WHEN** an operator selects Hub
+- **THEN** the installer configures the public Passkey origin and installs the Hub user service
+
+#### Scenario: Interactive Agent installation
+- **WHEN** an operator selects Agent
+- **THEN** the installer pairs with the Hub and installs the outbound-only Agent service without requesting a public URL
+
+#### Scenario: Binary-only installation
+- **WHEN** an operator selects binary-only
+- **THEN** the installer verifies and installs the executable without writing `.env` or starting a service

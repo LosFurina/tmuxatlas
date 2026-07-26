@@ -3,6 +3,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,31 @@ func TestLoadEnvRejectsUnrelatedVariables(t *testing.T) {
 	}
 	if err := LoadEnv(); err == nil {
 		t.Fatal("expected unrelated variable to be rejected")
+	}
+}
+
+func TestSaveEnvValuePreservesOtherSettings(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configDir, err := ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(configDir, ".env")
+	if err := os.WriteFile(path, []byte("TMUXATLAS_PUBLIC_URL=http://localhost:7654\n# keep\nTMUXATLAS_HUB=https://old.example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveEnvValue("TMUXATLAS_HUB", "https://hub.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, "TMUXATLAS_PUBLIC_URL=http://localhost:7654\n") ||
+		!strings.Contains(got, "# keep\n") ||
+		strings.Count(got, "TMUXATLAS_HUB=") != 1 ||
+		!strings.Contains(got, "TMUXATLAS_HUB=https://hub.example.com\n") {
+		t.Fatalf("unexpected environment file:\n%s", got)
 	}
 }

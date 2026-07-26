@@ -169,31 +169,32 @@ server {
 Generate a short-lived code on the hub:
 
 ```bash
-tmuxatlas pair generate
+tmuxatlas pair
 ```
 
 Join from each peer using the public, trusted gateway URL:
 
 ```bash
-tmuxatlas pair join --hub https://tmuxatlas.example.com --code WORD-WORD-WORD
-tmuxatlas server --hub https://tmuxatlas.example.com
+tmuxatlas pair --hub https://tmuxatlas.example.com --code WORD-WORD-WORD
+tmuxatlas agent
+tmuxatlas install --mode agent
 ```
 
-The peer uses normal hostname verification and the operating-system trust store. There is no private CA import, certificate pin, or insecure-verification switch. Certificate rotation by Cloudflare or ACME does not require re-pairing because Ed25519 peer identity is separate from TLS.
+Pairing saves `TMUXATLAS_HUB` in `~/.config/tmuxatlas/.env`. The Agent runs
+without a TCP listener, Web UI, Passkey configuration, or public URL. It keeps
+only an outbound WSS connection and a user-private Unix socket for local hooks.
+The peer uses normal hostname verification and the operating-system trust store.
+There is no private CA import, certificate pin, or insecure-verification switch.
+Certificate rotation by Cloudflare or ACME does not require re-pairing because
+Ed25519 peer identity is separate from TLS.
 
 For controlled local development only, an explicit plaintext hub is supported:
 
 ```bash
-tmuxatlas server --hub http://127.0.0.1:7654
+tmuxatlas agent --hub http://127.0.0.1:7654
 ```
 
 Bare hostnames default to a secure connection. A self-signed or hostname-invalid gateway certificate is rejected.
-
-Use `--local-only` on a peer if its local dashboard should show only that machine while the hub still receives its sessions:
-
-```bash
-tmuxatlas server --hub https://tmuxatlas.example.com --local-only
-```
 
 ## systemd examples
 
@@ -216,16 +217,16 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Peer:
+Agent:
 
 ```ini
 [Unit]
-Description=TmuxAtlas web dashboard (peer)
+Description=TmuxAtlas headless agent
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/tmuxatlas server
+ExecStart=%h/.local/bin/tmuxatlas agent
 Environment=TMUXATLAS_HUB=https://tmuxatlas.example.com
 Restart=on-failure
 RestartSec=5

@@ -11,6 +11,7 @@ import (
 	"github.com/LosFurina/tmuxatlas/pkg/common"
 	"github.com/LosFurina/tmuxatlas/pkg/paths"
 
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent-setup"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/doctor"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/install"
