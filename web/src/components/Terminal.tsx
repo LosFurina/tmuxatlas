@@ -290,7 +290,7 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
           </div>
         )}
       </div>
-      <div className="md:hidden shrink-0 pt-1 pb-[env(safe-area-inset-bottom)]">
+      <div className="lg:hidden shrink-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <button
           type="button"
           className="min-h-11 w-full border border-border rounded bg-card text-xs font-mono"
