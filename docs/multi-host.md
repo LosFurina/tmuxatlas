@@ -69,6 +69,31 @@ or verification fails, restart TmuxAtlas to emit a fresh token. The credential
 private key stays on the authenticator; TmuxAtlas stores the public credential
 record in `~/.config/tmuxatlas/passkeys.json`.
 
+## Add and manage backup Passkeys
+
+While signed in, open **Settings → Security → Passkeys**. Enter an optional
+label and choose **Add passkey**. TmuxAtlas uses the same administrator identity
+and public hostname as the first credential, then lets the browser offer any
+compatible provider:
+
+- a platform Passkey on the current device;
+- an iPhone through the browser's **Use another device** QR flow;
+- Proton Pass, Bitwarden, 1Password, a hardware key, or another
+  WebAuthn-compatible provider.
+
+The list shows only safe metadata: label, creation time, and last-used time.
+Rename credentials so their location is clear. Deleting one requires explicit
+confirmation, and both the interface and server prevent deleting the final
+credential. Add a backup on a separate device or provider and test a fresh
+login before removing an old Passkey.
+
+TmuxAtlas has no self-service recovery flow after all authenticators are lost.
+Keep at least two independently accessible Passkeys. If none remain, an
+operator with shell access must stop TmuxAtlas, move
+`~/.config/tmuxatlas/passkeys.json` aside, restart the service, and use the new
+one-time setup token to enroll again. This resets all prior credentials.
+Restoring `passkeys.json` does not restore missing private keys.
+
 Browser sessions use a sliding idle timeout. The default is 24 hours; each
 authenticated HTTP request refreshes both the server-side session and browser
 cookie. Configure it in `~/.config/tmuxatlas/.env`, for example:

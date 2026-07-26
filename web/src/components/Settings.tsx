@@ -4,6 +4,7 @@ import { usePushNotifications } from '../hooks/usePushNotifications'
 import { themePresets, applyTheme } from '../theme'
 import { cn } from '../lib/utils'
 import { AgentStatusList, SetupCommandBox } from './Setup'
+import { PasskeySettings } from './PasskeySettings'
 
 const terminalFontFamilies = [
   'Space Mono',
@@ -498,7 +499,9 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
 
           {/* ── Security ── */}
           {onLogout && (
-            <Section id="security" title="Security" description="Session locking and sign out">
+            <Section id="security" title="Security" description="Passkeys, session locking, and sign out">
+              <PasskeySettings />
+              <Divider />
               <Row label="Auto-lock Timeout" description="Sign out after idle inactivity (0 = disabled)">
                 <div className="flex items-center gap-2">
                   <NumberInput

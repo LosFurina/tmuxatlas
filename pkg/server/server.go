@@ -209,6 +209,9 @@ func Run(ctx context.Context, opts *Options) error {
 		r.Group(func(r chi.Router) {
 			if opts.AuthEnabled {
 				r.Use(auth.Middleware(opts.SessionMgr, opts.SecureCookies))
+				r.Get("/auth/passkeys", opts.PasskeyManager.ListHandler())
+				r.Patch("/auth/passkeys/{credentialID}", opts.PasskeyManager.RenameHandler())
+				r.Delete("/auth/passkeys/{credentialID}", opts.PasskeyManager.DeleteHandler())
 			}
 
 			// Agent status — check which agents are installed/configured

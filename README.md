@@ -44,7 +44,7 @@ The script detects Linux/macOS and amd64/arm64, downloads the newest GitHub Rele
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.3.0 \
+TMUXATLAS_VERSION=v0.4.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -85,9 +85,16 @@ tmuxatlas update
 
 The updater downloads the release archive and `checksums.txt`, verifies the
 SHA-256 checksum, and atomically replaces the currently running executable. It
-does not modify configuration, Passkeys, peer identities, or other user data,
-and it does not restart a running service. Use `tmuxatlas update --check` to
-check without installing, or `--force` to reinstall the current version.
+does not modify configuration, Passkeys, peer identities, or other user data.
+When the installed systemd/launchd service points to the same executable and
+was already running, the updater restarts it automatically. An inactive service
+is not started. The update is rejected if the service points to a different
+binary, preventing the wrong copy from being replaced.
+
+Use `tmuxatlas update --check` to check without installing,
+`--no-restart` to defer a service restart, or `--force` to reinstall the current
+version. Restarting clears in-memory browser sessions, so the next visit
+requires Passkey login.
 
 No token is needed for the public repository. If GitHub API rate limiting is a
 problem, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment.
@@ -154,6 +161,19 @@ TmuxAtlas does not store a password or a passkey private key. It stores only the
 public WebAuthn credential record in `~/.config/tmuxatlas/passkeys.json` with
 mode `0600`. Upgrades from password-based releases ignore the old `auth.json`;
 after verifying Passkey login, you may delete that legacy file manually.
+
+After signing in, open **Settings → Security → Passkeys** to add a backup
+Passkey, rename credentials, or remove one you no longer control. Provider
+selection belongs to the browser: use a device Passkey, scan the browser's QR
+code with an iPhone, or choose Proton Pass, Bitwarden, 1Password, or another
+WebAuthn-compatible provider. Add and verify a backup before deleting anything;
+TmuxAtlas refuses to delete the final registered Passkey.
+
+There is no in-app recovery when every authenticator is lost. An operator with
+shell access can stop TmuxAtlas, move `~/.config/tmuxatlas/passkeys.json` aside,
+and restart to bootstrap a new administrator Passkey, but that reset invalidates
+every previously registered credential. Backing up `passkeys.json` alone cannot
+replace the private keys held by your devices or password manager.
 
 ### 2. Configure agent hooks
 

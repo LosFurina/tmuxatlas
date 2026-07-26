@@ -45,3 +45,21 @@ jobs:
 
       - name: Go vet
         run: go vet ./...
+
+      - name: Install Chromium and tmux for E2E
+        run: |
+          npx playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y tmux
+        working-directory: web
+
+      - name: Build E2E server
+        run: |
+          mkdir -p dist
+          go build -o dist/tmuxatlas .
+
+      - name: Passkey E2E
+        run: |
+          tmux new-session -d -s tmuxatlas-e2e
+          npm run e2e
+        working-directory: web

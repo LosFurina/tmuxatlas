@@ -12,6 +12,67 @@ import (
 	"testing"
 )
 
+func TestParseSystemdExecStart(t *testing.T) {
+	for _, test := range []struct {
+		unit string
+		want string
+	}{
+		{
+			unit: "[Service]\nExecStart=/home/user/.local/bin/tmuxatlas server\n",
+			want: "/home/user/.local/bin/tmuxatlas",
+		},
+		{
+			unit: "[Service]\nExecStart=\"/home/user/My Apps/tmuxatlas\" server\n",
+			want: "/home/user/My Apps/tmuxatlas",
+		},
+	} {
+		got, err := parseSystemdExecStart(test.unit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Fatalf("executable = %q, want %q", got, test.want)
+		}
+	}
+}
+
+func TestParseLaunchdExecutable(t *testing.T) {
+	plist := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.tmuxatlas.server</string>
+<key>ProgramArguments</key><array>
+<string>/Users/test/.local/bin/tmuxatlas</string><string>server</string>
+</array>
+</dict></plist>`)
+	got, err := parseLaunchdExecutable(plist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/Users/test/.local/bin/tmuxatlas" {
+		t.Fatalf("executable = %q", got)
+	}
+}
+
+func TestValidateServiceExecutableRejectsDifferentCopy(t *testing.T) {
+	dir := t.TempDir()
+	current := filepath.Join(dir, "current")
+	serviceBinary := filepath.Join(dir, "service")
+	if err := os.WriteFile(current, []byte("current"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(serviceBinary, []byte("service"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service := &serviceInfo{kind: "systemd", name: "tmuxatlas.service", executable: serviceBinary}
+	if err := validateServiceExecutable(service, current); err == nil {
+		t.Fatal("expected different executable copies to be rejected")
+	}
+	service.executable = current
+	if err := validateServiceExecutable(service, current); err != nil {
+		t.Fatalf("matching executable rejected: %v", err)
+	}
+}
+
 func TestChecksumForAndVerify(t *testing.T) {
 	dir := t.TempDir()
 	archiveName := "tmuxatlas-v1.2.3-linux-amd64.tar.gz"

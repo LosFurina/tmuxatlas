@@ -16,7 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
@@ -25,11 +27,50 @@ import (
 
 const ceremonyCookieName = "tmuxatlas_webauthn"
 
+const maxPasskeyLabelRunes = 80
+
+var (
+	ErrPasskeyNotFound     = errors.New("passkey not found")
+	ErrLastPasskey         = errors.New("the final passkey cannot be deleted")
+	ErrInvalidPasskeyID    = errors.New("invalid passkey ID")
+	ErrInvalidPasskeyLabel = errors.New("passkey label must be between 1 and 80 characters")
+)
+
 type StoredCredential struct {
 	Label      string              `json:"label,omitempty"`
 	CreatedAt  time.Time           `json:"created_at"`
 	LastUsedAt *time.Time          `json:"last_used_at,omitempty"`
 	Credential webauthn.Credential `json:"credential"`
+}
+
+type PasskeyMetadata struct {
+	ID         string     `json:"id"`
+	Label      string     `json:"label"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+func encodeCredentialID(id []byte) string {
+	return base64.RawURLEncoding.EncodeToString(id)
+}
+
+func decodeCredentialID(value string) ([]byte, error) {
+	id, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(id) == 0 {
+		return nil, ErrInvalidPasskeyID
+	}
+	return id, nil
+}
+
+func validatePasskeyLabel(value string, allowEmpty bool) (string, error) {
+	label := strings.TrimSpace(value)
+	if label == "" && allowEmpty {
+		return "", nil
+	}
+	if label == "" || utf8.RuneCountInString(label) > maxPasskeyLabelRunes {
+		return "", ErrInvalidPasskeyLabel
+	}
+	return label, nil
 }
 
 type passkeyData struct {
@@ -119,6 +160,76 @@ func (s *PasskeyStore) HasCredentials() bool {
 	return len(s.data.Credentials) > 0
 }
 
+func (s *PasskeyStore) List() []PasskeyMetadata {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]PasskeyMetadata, len(s.data.Credentials))
+	for i, stored := range s.data.Credentials {
+		result[i] = PasskeyMetadata{
+			ID: encodeCredentialID(stored.Credential.ID), Label: stored.Label,
+			CreatedAt: stored.CreatedAt, LastUsedAt: stored.LastUsedAt,
+		}
+	}
+	return result
+}
+
+func (s *PasskeyStore) Rename(encodedID, value string) error {
+	id, err := decodeCredentialID(encodedID)
+	if err != nil {
+		return err
+	}
+	label, err := validatePasskeyLabel(value, false)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Credentials {
+		if bytes.Equal(s.data.Credentials[i].Credential.ID, id) {
+			previous := s.data.Credentials[i].Label
+			s.data.Credentials[i].Label = label
+			if err := s.saveLocked(); err != nil {
+				s.data.Credentials[i].Label = previous
+				return err
+			}
+			return nil
+		}
+	}
+	return ErrPasskeyNotFound
+}
+
+func (s *PasskeyStore) Delete(encodedID string) error {
+	id, err := decodeCredentialID(encodedID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := -1
+	for i := range s.data.Credentials {
+		if bytes.Equal(s.data.Credentials[i].Credential.ID, id) {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return ErrPasskeyNotFound
+	}
+	if len(s.data.Credentials) <= 1 {
+		return ErrLastPasskey
+	}
+	previous := s.data.Credentials
+	next := make([]StoredCredential, 0, len(previous)-1)
+	next = append(next, previous[:index]...)
+	next = append(next, previous[index+1:]...)
+	s.data.Credentials = next
+	if err := s.saveLocked(); err != nil {
+		s.data.Credentials = previous
+		return err
+	}
+	return nil
+}
+
 func (s *PasskeyStore) snapshot() passkeyUser {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -130,6 +241,10 @@ func (s *PasskeyStore) snapshot() passkeyUser {
 }
 
 func (s *PasskeyStore) add(label string, credential *webauthn.Credential) error {
+	label, err := validatePasskeyLabel(label, true)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.data.Credentials {
@@ -138,7 +253,7 @@ func (s *PasskeyStore) add(label string, credential *webauthn.Credential) error 
 		}
 	}
 	s.data.Credentials = append(s.data.Credentials, StoredCredential{
-		Label: strings.TrimSpace(label), CreatedAt: time.Now().UTC(), Credential: *credential,
+		Label: label, CreatedAt: time.Now().UTC(), Credential: *credential,
 	})
 	return s.saveLocked()
 }
@@ -154,7 +269,7 @@ func (s *PasskeyStore) update(credential *webauthn.Credential) error {
 			return s.saveLocked()
 		}
 	}
-	return errors.New("passkey not found")
+	return ErrPasskeyNotFound
 }
 
 type passkeyUser struct {
@@ -300,10 +415,10 @@ func (m *PasskeyManager) BeginRegistrationHandler() http.HandlerFunc {
 		options, session, err := m.webAuthn.BeginMediatedRegistration(
 			user,
 			protocol.MediationDefault,
-			webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 			webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
 				UserVerification: protocol.VerificationRequired,
 			}),
+			webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 			webauthn.WithExclusions(webauthn.Credentials(user.credentials).CredentialDescriptors()),
 		)
 		if err != nil {
@@ -312,6 +427,53 @@ func (m *PasskeyManager) BeginRegistrationHandler() http.HandlerFunc {
 		}
 		_ = m.putCeremony(w, ceremony{kind: "register", label: req.Label, session: session})
 		writeJSON(w, http.StatusOK, options)
+	}
+}
+
+func (m *PasskeyManager) ListHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"passkeys": m.store.List()})
+	}
+}
+
+func (m *PasskeyManager) RenameHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Label string `json:"label"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		err := m.store.Rename(chi.URLParam(r, "credentialID"), req.Label)
+		switch {
+		case errors.Is(err, ErrInvalidPasskeyID), errors.Is(err, ErrInvalidPasskeyLabel):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrPasskeyNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "could not rename passkey")
+		default:
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		}
+	}
+}
+
+func (m *PasskeyManager) DeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := m.store.Delete(chi.URLParam(r, "credentialID"))
+		switch {
+		case errors.Is(err, ErrInvalidPasskeyID):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrPasskeyNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrLastPasskey):
+			writeError(w, http.StatusConflict, err.Error())
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "could not delete passkey")
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
 	}
 }
 

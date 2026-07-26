@@ -214,45 +214,37 @@ func extractBinary(archivePath, destination string) error {
 	return errors.New("release archive does not contain tmuxatlas")
 }
 
-func replaceExecutable(source string) (string, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil {
-		return "", err
-	}
+func replaceExecutable(source, executable string) error {
 	input, err := os.Open(source)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer input.Close()
 	temp, err := os.CreateTemp(filepath.Dir(executable), ".tmuxatlas-update-*")
 	if err != nil {
-		return "", fmt.Errorf("cannot write beside %s: %w", executable, err)
+		return fmt.Errorf("cannot write beside %s: %w", executable, err)
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
 	if err := temp.Chmod(0o755); err != nil {
 		temp.Close()
-		return "", err
+		return err
 	}
 	if _, err := io.Copy(temp, input); err != nil {
 		temp.Close()
-		return "", err
+		return err
 	}
 	if err := temp.Sync(); err != nil {
 		temp.Close()
-		return "", err
+		return err
 	}
 	if err := temp.Close(); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.Rename(tempPath, executable); err != nil {
-		return "", fmt.Errorf("replace %s: %w", executable, err)
+		return fmt.Errorf("replace %s: %w", executable, err)
 	}
-	return executable, nil
+	return nil
 }
 
 func normalizeVersion(value string) string {
@@ -279,6 +271,25 @@ func execute(ctx context.Context, c *cli.Command) error {
 	if c.Bool("check") {
 		fmt.Println("An update is available.")
 		return nil
+	}
+
+	executable, err := currentExecutable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable: %w", err)
+	}
+	service, err := discoverService()
+	if err != nil {
+		return fmt.Errorf("inspect user service: %w", err)
+	}
+	if err := validateServiceExecutable(service, executable); err != nil {
+		return err
+	}
+	if service != nil {
+		state := "installed but not running"
+		if service.active {
+			state = "running"
+		}
+		fmt.Printf("Detected %s service %s (%s).\n", service.kind, service.name, state)
 	}
 
 	version := normalizeVersion(result.Tag)
@@ -316,12 +327,25 @@ func execute(ctx context.Context, c *cli.Command) error {
 	if err := extractBinary(archivePath, binaryPath); err != nil {
 		return fmt.Errorf("extract release: %w", err)
 	}
-	replaced, err := replaceExecutable(binaryPath)
-	if err != nil {
+	if err := replaceExecutable(binaryPath, executable); err != nil {
 		return err
 	}
-	fmt.Printf("Updated %s to %s\n", replaced, result.Tag)
-	fmt.Println("Restart any running TmuxAtlas service to use the new binary.")
+	fmt.Printf("Updated %s to %s\n", executable, result.Tag)
+	switch {
+	case service == nil:
+		fmt.Println("No TmuxAtlas user service was detected.")
+	case !service.active:
+		fmt.Printf("%s is not running, so it was not started.\n", service.name)
+	case c.Bool("no-restart"):
+		fmt.Printf("%s is still running the previous version; restart it when ready.\n", service.name)
+	default:
+		fmt.Printf("Restarting %s...\n", service.name)
+		if err := service.restart(ctx); err != nil {
+			return fmt.Errorf("binary updated, but service restart failed: %w", err)
+		}
+		fmt.Printf("Restarted %s successfully.\n", service.name)
+		fmt.Println("Existing in-memory browser sessions were cleared; sign in with your Passkey again.")
+	}
 	return nil
 }
 
@@ -332,6 +356,7 @@ func init() {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "check", Usage: "check for an update without installing it"},
 			&cli.BoolFlag{Name: "force", Usage: "reinstall even when the version is current"},
+			&cli.BoolFlag{Name: "no-restart", Usage: "do not restart a running systemd/launchd service"},
 			&cli.StringFlag{
 				Name:    "repository",
 				Usage:   "GitHub owner/repository",
