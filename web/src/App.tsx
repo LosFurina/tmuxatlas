@@ -17,6 +17,7 @@ import { useActivity } from './hooks/useActivity'
 import { useNotifications } from './hooks/useNotifications'
 import { useWebSocket } from './hooks/useWebSocket'
 import { usePushNotifications } from './hooks/usePushNotifications'
+import { usePWAInstall, type PWAInstallState } from './hooks/usePWAInstall'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
 import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
@@ -45,7 +46,7 @@ function getViewFromPath(): { view: View; sessionKey: string | null } {
   return { view: 'overview', sessionKey: null }
 }
 
-function AppInner({ onLogout }: { onLogout?: () => void }) {
+function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall: PWAInstallState }) {
   const { sessions, refresh } = useSessions()
   const { events: allToolEvents, handleEvent: handleToolEvent, getSessionEvents, sessionNeedsAttention, dismissEvent, dismissAll: dismissAllEvents } = useToolEvents()
   const { getSessionActivity, handleActivityEvent } = useActivity()
@@ -444,7 +445,13 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
           {currentView === 'setup' ? (
             <Setup onComplete={() => navigateTo(null)} />
           ) : currentView === 'settings' ? (
-            <Settings pushState={pushState} onPushSubscribe={pushSubscribe} onPushUnsubscribe={pushUnsubscribe} onLogout={onLogout} />
+            <Settings
+              pushState={pushState}
+              onPushSubscribe={pushSubscribe}
+              onPushUnsubscribe={pushUnsubscribe}
+              onLogout={onLogout}
+              pwaInstall={pwaInstall}
+            />
           ) : selectedSession ? (
             <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
               <Terminal
@@ -487,6 +494,7 @@ function AppInner({ onLogout }: { onLogout?: () => void }) {
 
 export default function App() {
   const prefsProvider = usePreferencesProvider()
+  const pwaInstall = usePWAInstall()
   const {
     loading, authRequired, needsSetup, authenticated, error: authError,
     rpId, origin, setup, login, logout,
@@ -552,7 +560,7 @@ export default function App() {
 
   return (
     <PreferencesContext.Provider value={prefsProvider}>
-      <AppInner onLogout={authRequired ? logout : undefined} />
+      <AppInner onLogout={authRequired ? logout : undefined} pwaInstall={pwaInstall} />
     </PreferencesContext.Provider>
   )
 }

@@ -18,6 +18,7 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 - **Real-time session discovery** — sessions, windows, and panes update live via tmux control mode.
 - **AI agent monitoring** — see which agents are active, waiting for input, or errored across all sessions at a glance.
 - **Push notifications** — get browser/desktop notifications when an agent needs attention, even with the tab backgrounded.
+- **Installable Web App** — install the HTTPS Hub as a focused PWA on desktop or add it to an iPhone/iPad Home Screen.
 - **Quick switcher** — Ctrl+K to jump between sessions and windows instantly, hands never leave the keyboard.
 - **Single binary** — Go backend with the React frontend embedded. No separate processes, no Node runtime needed in production.
 - **Unix socket + HTTP** — local CLI notifications go through a Unix socket for zero-config, with HTTP as fallback.
@@ -48,7 +49,7 @@ systemd/launchd user service; Agent installation also completes pairing.
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.5.0 \
+TMUXATLAS_VERSION=v0.6.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -202,6 +203,29 @@ Once hooks are configured, agent status shows up automatically:
 - The **Overview** page shows all sessions and any agents that need attention.
 - The **sidebar** badges sessions with active/waiting/errored agents.
 - **Push notifications** alert you when an agent needs input, even with the tab closed (enable in Settings > Notifications).
+
+### Install as a Web App
+
+TmuxAtlas can be installed from the same HTTPS hostname used for Passkey login:
+
+- In Chrome, Edge, or another Chromium browser, open **Settings → Interface →
+  Install TmuxAtlas** when the browser offers the install action. The browser's
+  address-bar or application menu can expose the same native action.
+- On iPhone or iPad, open the Hub in Safari, tap **Share**, then choose
+  **Add to Home Screen**. TmuxAtlas also shows these instructions under
+  **Settings → Interface**.
+
+The installed app remains on the Hub's existing origin, so it uses the same
+Passkey RP ID, Secure cookie, APIs, WebSockets, and Push subscription as the
+ordinary browser tab. Existing Passkeys do not need to be enrolled again.
+Cloudflare Tunnel or Nginx+ACME works without a separate application origin or
+Cloudflare Access; install from the final `TMUXATLAS_PUBLIC_URL` hostname.
+
+TmuxAtlas is online-only. Its Service Worker handles Push notifications but
+does not cache the application shell, authentication state, API responses, or
+terminal traffic. When the Hub or gateway is unreachable, the installed app
+shows the normal disconnected state rather than stale terminal content.
+
 ### Keyboard shortcuts
 
 Press `Ctrl+/` (or `Cmd+/` on macOS) to see all shortcuts, or click the `?` in the status bar.

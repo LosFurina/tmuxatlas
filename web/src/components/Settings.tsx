@@ -5,6 +5,7 @@ import { themePresets, applyTheme } from '../theme'
 import { cn } from '../lib/utils'
 import { AgentStatusList, SetupCommandBox } from './Setup'
 import { PasskeySettings } from './PasskeySettings'
+import type { PWAInstallState } from '../hooks/usePWAInstall'
 
 const terminalFontFamilies = [
   'Space Mono',
@@ -175,11 +176,12 @@ const sectionLabels: Record<typeof sectionIds[number], string> = {
   security: 'Security',
 }
 
-export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogout }: {
+export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogout, pwaInstall }: {
   pushState: string
   onPushSubscribe: () => void
   onPushUnsubscribe: () => void
   onLogout?: () => void
+  pwaInstall: PWAInstallState
 }) {
   const { prefs, updatePrefs } = usePreferences()
   const [saving, setSaving] = useState(false)
@@ -424,6 +426,41 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
                 options={shortcutOptions}
               />
             </Row>
+            <Divider />
+            <div className="py-1.5" data-testid="pwa-install">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <div className="text-sm text-foreground">Install TmuxAtlas</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Open this Hub in a focused standalone app.
+                  </div>
+                </div>
+                {pwaInstall.isStandalone ? (
+                  <span className="text-xs text-success" data-testid="pwa-installed">Installed</span>
+                ) : pwaInstall.canPrompt ? (
+                  <button
+                    type="button"
+                    onClick={() => void pwaInstall.install()}
+                    className="px-3 py-1.5 rounded text-xs border border-primary text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+                  >
+                    Install TmuxAtlas
+                  </button>
+                ) : pwaInstall.isAppleMobile ? (
+                  <span className="text-xs text-muted-foreground">Manual install</span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Browser menu</span>
+                )}
+              </div>
+              {!pwaInstall.isStandalone && pwaInstall.isAppleMobile && (
+                <p className="mt-3 rounded border border-border bg-background p-3 text-xs text-muted-foreground" data-testid="pwa-ios-guidance">
+                  On iPhone or iPad, tap Share, then choose Add to Home Screen.
+                </p>
+              )}
+              <div className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+                {pwaInstall.outcome === 'dismissed' && 'Installation dismissed. You can try again when your browser offers the install action.'}
+                {pwaInstall.outcome === 'accepted' && 'Installation accepted. TmuxAtlas will open from your app launcher.'}
+              </div>
+            </div>
           </Section>
 
           {/* ── Notifications ── */}

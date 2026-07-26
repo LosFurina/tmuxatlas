@@ -672,16 +672,7 @@ func Run(ctx context.Context, opts *Options) error {
 	if err != nil {
 		return fmt.Errorf("frontend fs: %w", err)
 	}
-	fileServer := http.FileServer(http.FS(sub))
-	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-		f, err := sub.Open(r.URL.Path[1:])
-		if err != nil {
-			r.URL.Path = "/"
-		} else {
-			f.Close()
-		}
-		fileServer.ServeHTTP(w, r)
-	})
+	r.Get("/*", frontendHandler(sub).ServeHTTP)
 
 	srv := &http.Server{
 		Handler:           r,

@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 
 type PushState = 'unsupported' | 'prompt' | 'granted' | 'denied' | 'subscribed'
 
+const serviceWorkerURL = '/sw.js'
+const serviceWorkerScope = '/'
+
 function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
@@ -15,6 +18,10 @@ function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
 
 export function usePushNotifications() {
   const [state, setState] = useState<PushState>('unsupported')
+
+  const getRegistration = useCallback(() => {
+    return navigator.serviceWorker.getRegistration(serviceWorkerScope)
+  }, [])
 
   useEffect(() => {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -31,7 +38,7 @@ export function usePushNotifications() {
       }
 
       try {
-        const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+        const reg = await getRegistration()
         if (reg) {
           const sub = await reg.pushManager.getSubscription()
           if (sub) {
@@ -51,13 +58,16 @@ export function usePushNotifications() {
     }
 
     check()
-  }, [])
+  }, [getRegistration])
 
   const subscribe = useCallback(async () => {
     try {
-      // Register service worker
-      const reg = await navigator.serviceWorker.register('/sw.js')
-      await navigator.serviceWorker.ready
+      const reg = await navigator.serviceWorker.register(serviceWorkerURL, {
+        scope: serviceWorkerScope,
+        updateViaCache: 'none',
+      })
+      const ready = await navigator.serviceWorker.ready
+      const activeRegistration = ready.scope === reg.scope ? ready : reg
 
       // Get VAPID public key from server
       const res = await fetch('/api/push/vapid-key')
@@ -68,7 +78,7 @@ export function usePushNotifications() {
       const { public_key } = await res.json()
 
       // Subscribe to push
-      const sub = await reg.pushManager.subscribe({
+      const sub = await activeRegistration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(public_key),
       })
@@ -95,7 +105,7 @@ export function usePushNotifications() {
 
   const unsubscribe = useCallback(async () => {
     try {
-      const reg = await navigator.serviceWorker.getRegistration('/sw.js')
+      const reg = await getRegistration()
       if (reg) {
         const sub = await reg.pushManager.getSubscription()
         if (sub) {
@@ -112,7 +122,7 @@ export function usePushNotifications() {
     } catch (err) {
       console.error('Push unsubscribe failed:', err)
     }
-  }, [])
+  }, [getRegistration])
 
   return { pushState: state, subscribe, unsubscribe }
 }
