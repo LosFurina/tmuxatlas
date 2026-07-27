@@ -12,6 +12,7 @@ import {
 } from './ptyCapture'
 
 const baseURL = 'http://localhost:17657'
+const primaryModifier = process.platform === 'darwin' ? 'Meta' : 'Control'
 let server: ChildProcessWithoutNullStreams
 let testHome: string
 
@@ -507,7 +508,7 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
       )
     }
 
-    await page.keyboard.press('Meta+k')
+    await page.keyboard.press(`${primaryModifier}+k`)
     const palette = page.getByRole('dialog', { name: 'Command Palette' })
     await expectInsideVisualViewport(
       palette,
@@ -567,7 +568,7 @@ test('Drawer, Palette, Terminal toolbar and Composer stay within mobile visual v
       await expect(drawer).toBeHidden()
     }
 
-    await page.keyboard.press('Meta+k')
+    await page.keyboard.press(`${primaryModifier}+k`)
     await expectInsideVisualViewport(
       page.getByRole('dialog', { name: 'Command Palette' }),
       `${size.width}×${size.height} Palette with software keyboard`,
