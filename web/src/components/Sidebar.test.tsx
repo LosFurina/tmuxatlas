@@ -1,5 +1,5 @@
 import { useState, type ComponentProps } from 'react'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Host } from '../hooks/useHosts'
@@ -12,9 +12,9 @@ import { Sidebar } from './Sidebar'
 
 vi.mock('../lib/runtimeApi', () => ({ postRuntimeMutation: vi.fn() }))
 
-function session(host: string): Session {
+function session(host: string, name = 'work'): Session {
   return {
-    id: `${host}-work`, host, host_name: 'Duplicate Host', host_online: true, name: 'work', created: '', attached: false, last_activity: '2026-01-01T00:00:00Z', windows: [],
+    id: `${host}-${name}`, host, host_name: 'Duplicate Host', host_online: true, name, created: '', attached: false, last_activity: '2026-01-01T00:00:00Z', windows: [],
   }
 }
 
@@ -80,6 +80,25 @@ describe('state-driven Sidebar', () => {
     expect(screen.getByRole('button', { name: 'Collapse Duplicate Host (host-a) host sessions' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('button', { name: 'Collapse Duplicate Host (host-b) host sessions' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getAllByRole('button', { name: /Open Duplicate Host session work/ })).toHaveLength(2)
+  })
+
+  it('wraps long Session names instead of truncating them beside the status', () => {
+    const longName = 'hp-fix-installation-and-runtime-validation'
+    const longWorkspace = buildWorkspaceViewModel(
+      [session('host-a', longName)],
+      [],
+      new Map(),
+      hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: longWorkspace, selectedSession: `host-a/${longName}` })
+
+    const label = screen.getByText(longName)
+    expect(label).toHaveClass('whitespace-normal', 'break-words')
+    expect(label).not.toHaveClass('truncate')
+    const sessionButton = screen.getByRole('button', {
+      name: `Open Duplicate Host session ${longName}, Done`,
+    })
+    expect(within(sessionButton).getByText('Done')).toBeInTheDocument()
   })
 
   it('collapses Hosts independently and reopens the selected Host', async () => {

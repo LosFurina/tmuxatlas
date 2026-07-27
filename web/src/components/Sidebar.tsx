@@ -284,7 +284,7 @@ export function Sidebar({
             }}
             className="min-w-0 flex-1 px-3 py-2 text-left text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-start">
               {isRenaming ? (
                 <input
                   ref={renameInputRef}
@@ -301,11 +301,11 @@ export function Sidebar({
                   className="min-w-0 flex-1 rounded border border-primary bg-input px-1 py-0.5 font-mono text-sm text-foreground outline-none"
                 />
               ) : (
-                <span className="min-w-0 flex-1 truncate font-medium">{collapsed ? session.name.charAt(0).toUpperCase() : session.name}</span>
-              )}
-              {!collapsed && (
-                <span className={cn('rounded-full border px-1.5 py-0.5 text-[10px] font-medium', statusClass[session.status])}>
-                  {workspaceStatusLabel(session.status)}
+                <span className={cn(
+                  'min-w-0 flex-1 font-medium',
+                  collapsed ? 'truncate' : 'whitespace-normal break-words leading-5 [overflow-wrap:anywhere]',
+                )}>
+                  {collapsed ? session.name.charAt(0).toUpperCase() : session.name}
                 </span>
               )}
             </div>
@@ -313,8 +313,11 @@ export function Sidebar({
               <>
                 <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
                   {showHost && <span className="truncate">{session.hostName}</span>}
-                  <span>{relativeActivity(session.lastActivity)}</span>
-                  {session.agents.length > 0 && <span className="truncate">{session.agents.join(', ')}</span>}
+                  <span className="shrink-0">{relativeActivity(session.lastActivity)}</span>
+                  {session.agents.length > 0 && <span className="min-w-0 truncate">{session.agents.join(', ')}</span>}
+                  <span className={cn('ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium', statusClass[session.status])}>
+                    {workspaceStatusLabel(session.status)}
+                  </span>
                 </div>
                 {session.activity?.sparkline?.length ? <div className="mt-1"><Sparkline data={session.activity.sparkline} /></div> : null}
               </>
