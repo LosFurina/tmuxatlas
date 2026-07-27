@@ -46,6 +46,7 @@ The one-line installer asks for this URL and stores it in
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_ROLE=hub \
   TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com sh
 ```
 

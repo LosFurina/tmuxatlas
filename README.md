@@ -32,7 +32,26 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 
 ## Installation
 
-### Install the latest release
+### Choose the role for each machine
+
+TmuxAtlas uses the same binary for three installation roles:
+
+| Role | Use it when | What the installer starts |
+|------|-------------|----------------------------|
+| **Hub** | This machine hosts the Web UI and aggregates local and remote tmux sessions | `tmuxatlas server`, listening on loopback by default |
+| **Agent** | This machine contributes its tmux sessions to an existing Hub | `tmuxatlas agent`, with an outbound-only WSS connection to the Hub |
+| **Binary** | You want to configure or run TmuxAtlas manually | Nothing; only the executable is installed |
+
+An Agent does **not** start a Web UI, HTTP listener, Passkey service, or public
+endpoint. Do not run `tmuxatlas server --hub ...` on an Agent. The correct
+long-running command is `tmuxatlas agent`, and the installer registers it as a
+background user service.
+
+The installer supports Linux (`systemd --user`) and macOS (`launchd`) on amd64
+and arm64. It requires `curl`, `tar`, and either `sha256sum` or `shasum`; Hub
+and Agent machines also need `tmux`.
+
+### Interactive installation
 
 Review [install.sh](install.sh), then run:
 
@@ -40,11 +59,19 @@ Review [install.sh](install.sh), then run:
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh | sh
 ```
 
-The script first asks whether this machine is a Hub, an outbound-only Agent, or
-a binary-only installation. It then asks only for the URL relevant to that
-role, downloads the newest GitHub Release, verifies its SHA-256 checksum, and
-installs `tmuxatlas` to `~/.local/bin`. Hub and Agent roles are installed as a
-systemd/launchd user service; Agent installation also completes pairing.
+The script asks which role this machine should use:
+
+- **Hub** asks for the final browser-facing URL. Use the real HTTPS gateway
+  hostname, such as `https://tmuxatlas.example.com`, before creating the first
+  Passkey. For a local-only Hub, use `http://localhost:7654`.
+- **Agent** asks for the trusted Hub URL and a current six-word pairing code
+  generated on the Hub.
+- **Binary** skips role configuration and service creation.
+
+The script downloads the newest GitHub Release, verifies its SHA-256 checksum,
+and installs `tmuxatlas` to `~/.local/bin`. It can also add a clearly marked
+`set -g mouse on` block to `~/.tmux.conf`. Role configuration is saved with
+mode `0600` in `~/.config/tmuxatlas/.env`.
 
 Override the defaults when needed:
 
@@ -54,7 +81,13 @@ TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
 
-For unattended installs, choose explicitly instead of waiting for a prompt:
+### 1. Install the Hub
+
+Put a trusted HTTPS gateway such as Cloudflare Tunnel or Nginx+ACME in front of
+the Hub. The default origin remains `127.0.0.1:7654`; the public URL is the
+browser, Passkey, cookie, and Peer origin. Path-prefix hosting is not supported.
+
+For an unattended Hub installation:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
@@ -63,17 +96,106 @@ curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh
   TMUXATLAS_CONFIGURE_TMUX=yes sh
 ```
 
-For an unattended Agent installation:
+This installs and immediately starts:
+
+| Platform | Service | Status and logs |
+|----------|---------|-----------------|
+| Linux | `tmuxatlas.service` | `systemctl --user status tmuxatlas.service` and `journalctl --user -u tmuxatlas.service -f` |
+| macOS | `com.tmuxatlas.server` | `launchctl list com.tmuxatlas.server` and `tail -f ~/Library/Logs/com.tmuxatlas.server.stderr.log` |
+
+On a headless Linux server, enable lingering for the installation user if the
+Hub must survive SSH logout and start at boot:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Open the final `TMUXATLAS_PUBLIC_URL`. On first launch, retrieve the one-time
+setup token from the service log, enter it in the browser, and enroll the
+administrator Passkey. The browser can use the current device, a password
+manager, hardware key, or an iPhone through its **Use another device** QR flow.
+
+Verify the Hub before pairing another machine:
+
+```bash
+tmuxatlas doctor
+```
+
+See [Multi-host and trusted gateway deployment](docs/multi-host.md) for
+Cloudflare Tunnel, Nginx+ACME, Passkey bootstrap, and reverse-proxy examples.
+
+### 2. Add an Agent
+
+First generate a short-lived six-word pairing code on the running Hub:
+
+```bash
+tmuxatlas pair
+```
+
+Run the installer on the remote tmux machine, choose **Agent**, then enter the
+Hub's final HTTPS URL and the generated code. For an unattended installation:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
   TMUXATLAS_ROLE=agent \
   TMUXATLAS_HUB=https://tmuxatlas.example.com \
-  TMUXATLAS_PAIR_CODE=WORD-WORD-WORD sh
+  TMUXATLAS_PAIR_CODE=WORD-WORD-WORD-WORD-WORD-WORD \
+  TMUXATLAS_CONFIGURE_TMUX=yes sh
 ```
 
-Set `TMUXATLAS_ROLE=binary` for no configuration or service. Set
-`TMUXATLAS_CONFIGURE_TMUX=no` to leave `.tmux.conf` untouched.
+The Agent installation performs the Ed25519 pairing handshake, saves the Hub
+URL, and immediately starts the background service:
+
+| Platform | Service | Status and logs |
+|----------|---------|-----------------|
+| Linux | `tmuxatlas-agent.service` | `systemctl --user status tmuxatlas-agent.service` and `journalctl --user -u tmuxatlas-agent.service -f` |
+| macOS | `com.tmuxatlas.agent` | `launchctl list com.tmuxatlas.agent` and `tail -f ~/Library/Logs/com.tmuxatlas.agent.stderr.log` |
+
+The same Linux lingering rule applies when an Agent must run without an active
+login session.
+
+The Agent opens only an outbound WSS connection to the trusted Hub and a
+user-private Unix socket for local hooks. It does not need an inbound firewall
+rule, public URL, Passkey, or TLS certificate. Cloudflare/ACME certificate
+renewal does not require re-pairing because the Peer identity is independent
+from the gateway certificate.
+
+Configure AI-agent hooks on every machine where Claude Code, Codex, Copilot, or
+OpenCode runs:
+
+```bash
+tmuxatlas agent-setup
+tmuxatlas doctor
+```
+
+The new host and its tmux sessions should then appear in the Hub Web UI. If it
+does not, check the Agent service log first.
+
+### Binary-only and manual installation
+
+Install only the verified executable, without writing `.env`, pairing, or
+creating a service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
+  TMUXATLAS_ROLE=binary \
+  TMUXATLAS_CONFIGURE_TMUX=no sh
+```
+
+You can then configure and run either role manually:
+
+```bash
+# Manual Hub
+TMUXATLAS_PUBLIC_URL=http://localhost:7654 tmuxatlas server
+
+# Manual Agent after running `tmuxatlas pair --hub ... --code ...`
+TMUXATLAS_HUB=https://tmuxatlas.example.com tmuxatlas agent
+```
+
+For all unattended installations, set `TMUXATLAS_ROLE` explicitly. When the
+script has no interactive terminal and no role is supplied, it deliberately
+falls back to binary-only installation. Set `TMUXATLAS_CONFIGURE_TMUX=no` to
+leave `.tmux.conf` untouched.
 
 ### Update and diagnose
 
@@ -128,9 +250,11 @@ make build
 
 ## Usage
 
-### 1. Start the server
+### 1. Start the server manually
 
-Make sure [tmux](https://github.com/tmux/tmux) is running with at least one session, then:
+The Hub installer already starts the server service. For a binary-only or
+source installation, make sure [tmux](https://github.com/tmux/tmux) is running
+with at least one session, then:
 
 ```bash
 tmuxatlas server
