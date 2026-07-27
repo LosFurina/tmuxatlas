@@ -147,4 +147,32 @@ describe('state-driven Sidebar', () => {
     expect(trigger).not.toHaveAttribute('aria-hidden')
     await waitFor(() => expect(trigger).toHaveFocus())
   })
+
+  it('closes the mobile Drawer when Escape arrives before focus enters it', async () => {
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <div>
+          <button type="button" data-testid="early-drawer-trigger">Open sessions</button>
+          <Sidebar
+            workspace={workspace}
+            selectedSession={null}
+            collapsed={false}
+            collapseMode="small"
+            pinnedTargets={[]}
+            recentTargets={[]}
+            onTogglePin={vi.fn()}
+            onSessionSelect={vi.fn()}
+            onDetachSession={vi.fn()}
+            mobileOpen={open}
+            onMobileClose={() => setOpen(false)}
+          />
+        </div>
+      )
+    }
+
+    renderStrict(<Harness />)
+    fireEvent.keyDown(screen.getByTestId('early-drawer-trigger'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Workspace sessions' })).not.toBeInTheDocument())
+  })
 })

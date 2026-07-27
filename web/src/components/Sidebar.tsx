@@ -198,11 +198,18 @@ export function Sidebar({
         first.focus()
       }
     }
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || drawer.contains(event.target as Node)) return
+      event.preventDefault()
+      onMobileCloseRef.current?.()
+    }
     drawer.addEventListener('keydown', onKeyDown)
+    document.addEventListener('keydown', onDocumentKeyDown)
 
     return () => {
       window.cancelAnimationFrame(frame)
       drawer.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('keydown', onDocumentKeyDown)
       restoreBackground()
       window.requestAnimationFrame(() => {
         if (previousFocus?.isConnected) previousFocus.focus()
