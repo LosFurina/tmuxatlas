@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CompositionEvent,
@@ -36,13 +37,28 @@ export function MobileInputComposer({
   const byteLength = terminalCommandBodyByteLength(draft)
   const tooLarge = byteLength > MAX_TERMINAL_COMMAND_BODY_BYTES
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
     textarea.style.height = 'auto'
     const lineHeight = 22
     textarea.style.height = `${Math.max(lineHeight, Math.min(textarea.scrollHeight || lineHeight, lineHeight * 3))}px`
   }, [draft, expanded])
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const persistNativeDraft = () => {
+      const nextDraft = textarea.value
+      draftRef.current = nextDraft
+      onDraftChange(targetKey, nextDraft)
+    }
+    textarea.addEventListener('input', persistNativeDraft)
+    return () => {
+      persistNativeDraft()
+      textarea.removeEventListener('input', persistNativeDraft)
+    }
+  }, [expanded, onDraftChange, targetKey])
 
   useEffect(() => {
     if (!expanded) return
@@ -56,7 +72,8 @@ export function MobileInputComposer({
 
   const submit = async () => {
     if (sending || composingRef.current) return
-    const submittedDraft = draftRef.current
+    const submittedDraft = textareaRef.current?.value ?? draftRef.current
+    draftRef.current = submittedDraft
     const submittedByteLength = terminalCommandBodyByteLength(submittedDraft)
     setFeedback('')
     if (submittedByteLength > MAX_TERMINAL_COMMAND_BODY_BYTES) {

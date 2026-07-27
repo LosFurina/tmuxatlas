@@ -4,7 +4,7 @@ import { MobileInputComposer } from './MobileInputComposer'
 
 function renderComposer(onSend = vi.fn<() => void | Promise<void>>()) {
   const onDraftChange = vi.fn()
-  render(
+  const view = render(
     <MobileInputComposer
       targetKey='["host-a","work"]'
       targetLabel="host-a/work"
@@ -14,7 +14,7 @@ function renderComposer(onSend = vi.fn<() => void | Promise<void>>()) {
     />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Expand Mobile Input Composer' }))
-  return { onSend, onDraftChange }
+  return { onSend, onDraftChange, ...view }
 }
 
 describe('MobileInputComposer boundaries', () => {
@@ -92,5 +92,29 @@ describe('MobileInputComposer boundaries', () => {
       '["host-a","work"]',
       'draft before navigation',
     )
+  })
+
+  it('flushes the DOM value when WebKit unmounts before React commits the change', () => {
+    const { onDraftChange, unmount } = renderComposer()
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    textarea.value = 'native value pending at unmount'
+    onDraftChange.mockClear()
+
+    unmount()
+
+    expect(onDraftChange).toHaveBeenCalledWith(
+      '["host-a","work"]',
+      'native value pending at unmount',
+    )
+  })
+
+  it('submits the DOM value when WebKit clicks Send before React commits the change', async () => {
+    const { onSend } = renderComposer()
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement
+    textarea.value = 'native value pending at send'
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send command to host-a/work' }))
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('native value pending at send'))
   })
 })
