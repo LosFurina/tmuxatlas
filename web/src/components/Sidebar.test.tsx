@@ -82,7 +82,7 @@ describe('state-driven Sidebar', () => {
     expect(screen.getAllByRole('button', { name: /Open Duplicate Host session work/ })).toHaveLength(2)
   })
 
-  it('wraps long Session names instead of truncating them beside the status', () => {
+  it('keeps Session rows compact while showing up to two name lines', () => {
     const longName = 'hp-fix-installation-and-runtime-validation'
     const longWorkspace = buildWorkspaceViewModel(
       [session('host-a', longName)],
@@ -93,11 +93,12 @@ describe('state-driven Sidebar', () => {
     renderSidebar({ workspace: longWorkspace, selectedSession: `host-a/${longName}` })
 
     const label = screen.getByText(longName)
-    expect(label).toHaveClass('whitespace-normal', 'break-words')
-    expect(label).not.toHaveClass('truncate')
+    expect(label).toHaveClass('line-clamp-2', 'h-8', 'break-words')
+    expect(label).toHaveAttribute('title', longName)
     const sessionButton = screen.getByRole('button', {
       name: `Open Duplicate Host session ${longName}, Done`,
     })
+    expect(sessionButton.parentElement).toHaveClass('h-14')
     expect(within(sessionButton).getByText('Done')).toBeInTheDocument()
   })
 

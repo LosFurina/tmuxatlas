@@ -35,17 +35,6 @@ const statusClass: Record<WorkspaceStatus, string> = {
   offline: 'bg-muted text-muted-foreground border-border',
 }
 
-function Sparkline({ data }: { data: number[] }) {
-  if (!data.length) return null
-  const max = Math.max(...data, 1)
-  return (
-    <svg viewBox={`0 0 ${data.length} 14`} preserveAspectRatio="none" width="100%" height="14" aria-hidden="true" className="block">
-      {data.map((value, index) => (
-        <rect key={index} x={index} y={14 - (value / max) * 14} width="0.92" height={(value / max) * 14} className={value > 0 ? 'fill-chart-primary opacity-70' : 'fill-muted opacity-30'} />
-      ))}
-    </svg>
-  )
-}
 function relativeActivity(timestamp: string | null): string {
   if (!timestamp) return 'No recent activity'
   const elapsed = Date.now() - Date.parse(timestamp)
@@ -264,6 +253,7 @@ export function Sidebar({
       <li key={session.key}>
         <div className={cn(
           'group relative flex w-full rounded-lg border-l-2 transition-colors',
+          collapsed ? 'h-10' : 'h-14',
           selected ? 'border-primary bg-sidebar-accent text-sidebar-primary' : isAttentionStatus(session.status) ? 'border-warning bg-warning/5' : 'border-transparent hover:bg-sidebar-accent',
         )}>
           <button
@@ -282,7 +272,10 @@ export function Sidebar({
                 openMenu(session, rect.left + 24, rect.top + 24)
               }
             }}
-            className="min-w-0 flex-1 px-3 py-2 text-left text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className={cn(
+              'min-w-0 flex-1 text-left text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              collapsed ? 'px-3 py-2' : 'px-2.5 py-1',
+            )}
           >
             <div className="flex min-w-0 items-start">
               {isRenaming ? (
@@ -303,24 +296,22 @@ export function Sidebar({
               ) : (
                 <span className={cn(
                   'min-w-0 flex-1 font-medium',
-                  collapsed ? 'truncate' : 'whitespace-normal break-words leading-5 [overflow-wrap:anywhere]',
-                )}>
+                  collapsed ? 'truncate' : 'line-clamp-2 h-8 break-words text-[13px] leading-4 [overflow-wrap:anywhere]',
+                )}
+                title={collapsed ? undefined : session.name}>
                   {collapsed ? session.name.charAt(0).toUpperCase() : session.name}
                 </span>
               )}
             </div>
             {!collapsed && (
-              <>
-                <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
-                  {showHost && <span className="truncate">{session.hostName}</span>}
-                  <span className="shrink-0">{relativeActivity(session.lastActivity)}</span>
-                  {session.agents.length > 0 && <span className="min-w-0 truncate">{session.agents.join(', ')}</span>}
-                  <span className={cn('ml-auto shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium', statusClass[session.status])}>
-                    {workspaceStatusLabel(session.status)}
-                  </span>
-                </div>
-                {session.activity?.sparkline?.length ? <div className="mt-1"><Sparkline data={session.activity.sparkline} /></div> : null}
-              </>
+              <div className="flex h-3.5 min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
+                {showHost && <span className="truncate">{session.hostName}</span>}
+                <span className="shrink-0">{relativeActivity(session.lastActivity)}</span>
+                {session.agents.length > 0 && <span className="min-w-0 truncate">{session.agents.join(', ')}</span>}
+                <span className={cn('ml-auto shrink-0 rounded-full border px-1 py-0 text-[9px] font-medium leading-3', statusClass[session.status])}>
+                  {workspaceStatusLabel(session.status)}
+                </span>
+              </div>
             )}
           </button>
           {!collapsed && (
@@ -329,7 +320,7 @@ export function Sidebar({
               aria-label={pinnedSet.has(session.key) ? `Unpin ${session.hostName} session ${session.name}` : `Pin ${session.hostName} session ${session.name}`}
               aria-pressed={pinnedSet.has(session.key)}
               onClick={() => onTogglePin(session.key)}
-              className="mr-1 grid h-11 w-9 shrink-0 place-items-center self-center rounded text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+              className="mr-0.5 grid h-9 w-8 shrink-0 place-items-center self-center rounded text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
             >
               <span aria-hidden="true">{pinnedSet.has(session.key) ? '★' : '☆'}</span>
             </button>
