@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '../lib/utils'
 import { postRuntimeMutation } from '../lib/runtimeApi'
-import type { Session } from '../hooks/useSessions'
+import { parseSessionKey, type Session } from '../hooks/useSessions'
 import type { WorkspaceSession, WorkspaceStatus, WorkspaceViewModel } from '../workspace/model'
 import { filterWorkspaceSessions, isAttentionStatus, workspaceStatusLabel } from '../workspace/model'
 import { Button, Dialog } from './ui'
@@ -62,7 +62,6 @@ export function Sidebar({
   collapsed,
   collapseMode,
   pinnedTargets,
-  recentTargets,
   onTogglePin,
   onSessionSelect,
   onDetachSession,
@@ -75,6 +74,10 @@ export function Sidebar({
 }: SidebarProps) {
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<WorkspaceStatus | 'all'>('all')
+  const [expandedHosts, setExpandedHosts] = useState<Set<string>>(
+    () => new Set(workspace.hosts.map(host => host.id)),
+  )
+  const knownHostsRef = useRef(new Set(workspace.hosts.map(host => host.id)))
   const [renaming, setRenaming] = useState<WorkspaceSession | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [contextMenu, setContextMenu] = useState<{ session: WorkspaceSession; x: number; y: number } | null>(null)
@@ -96,21 +99,24 @@ export function Sidebar({
 
   const filtered = useMemo(() => filterWorkspaceSessions(workspace.sessions, query, statusFilter), [query, statusFilter, workspace.sessions])
   const pinnedSet = useMemo(() => new Set(pinnedTargets), [pinnedTargets])
+  const filtering = query.trim().length > 0 || statusFilter !== 'all'
 
-  const sections = useMemo(() => {
-    const used = new Set<string>()
-    const take = (predicate: (session: WorkspaceSession) => boolean) => filtered.filter(session => {
-      if (used.has(session.key) || !predicate(session)) return false
-      used.add(session.key)
-      return true
+  useEffect(() => {
+    const currentHostIds = new Set(workspace.hosts.map(host => host.id))
+    const addedHostIds = [...currentHostIds].filter(id => !knownHostsRef.current.has(id))
+    knownHostsRef.current = currentHostIds
+    if (addedHostIds.length === 0) return
+    setExpandedHosts(current => new Set([...current, ...addedHostIds]))
+  }, [workspace.hosts])
+
+  useEffect(() => {
+    if (!selectedSession) return
+    const selectedHostId = parseSessionKey(selectedSession).host
+    setExpandedHosts(current => {
+      if (current.has(selectedHostId)) return current
+      return new Set([...current, selectedHostId])
     })
-    return {
-      attention: take(session => isAttentionStatus(session.status)),
-      pinned: take(session => pinnedTargets.includes(session.key)),
-      recent: take(session => recentTargets.slice(0, 6).includes(session.key)),
-      remaining: take(() => true),
-    }
-  }, [filtered, pinnedTargets, recentTargets])
+  }, [selectedSession])
 
   useEffect(() => {
     if (!renaming) return
@@ -330,18 +336,21 @@ export function Sidebar({
     )
   }
 
-  const renderSection = (label: string, sessions: WorkspaceSession[]) => sessions.length ? (
-    <li key={label}>
-      <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label} · {sessions.length}</div>
-      <ul className="space-y-1">{sessions.map(session => renderSession(session, true))}</ul>
-    </li>
-  ) : null
-
+  const filteredKeys = new Set(filtered.map(session => session.key))
   const hostGroups = workspace.hosts.flatMap(host => {
-    const hostSessions = sections.remaining.filter(session => session.hostId === host.id)
+    const hostSessions = host.sessions.filter(session => filteredKeys.has(session.key))
     if (!hostSessions.length) return []
     return [{ host, sessions: hostSessions }]
   })
+
+  const toggleHost = (hostId: string) => {
+    setExpandedHosts(current => {
+      const next = new Set(current)
+      if (next.has(hostId)) next.delete(hostId)
+      else next.add(hostId)
+      return next
+    })
+  }
 
   const isHidden = collapsed && collapseMode === 'hidden'
   return (
@@ -400,18 +409,37 @@ export function Sidebar({
             <ul className="space-y-1">{filtered.map(session => renderSession(session))}</ul>
           ) : (
             <ul className="space-y-1">
-              {renderSection('Needs attention', sections.attention)}
-              {renderSection('Pinned', sections.pinned)}
-              {renderSection('Recent', sections.recent)}
               {hostGroups.map(({ host, sessions }) => (
                 <li key={host.id}>
-                  <div className="flex items-center gap-2 px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    <span className={cn('h-2 w-2 rounded-full', host.online ? 'bg-success' : 'bg-muted-foreground')} />
-                    <span className="min-w-0 flex-1 truncate">{host.name}</span>
-                    <span>{host.sessionCount}</span>
-                    {host.attentionCount > 0 && <span className="text-warning">{host.attentionCount} alert</span>}
-                  </div>
-                  <ul className="space-y-1">{sessions.map(session => renderSession(session))}</ul>
+                  <button
+                    type="button"
+                    aria-label={`${filtering || expandedHosts.has(host.id) ? 'Collapse' : 'Expand'} ${host.name} (${host.id}) host sessions`}
+                    aria-expanded={filtering || expandedHosts.has(host.id)}
+                    onClick={() => toggleHost(host.id)}
+                    className="mt-1 flex min-h-10 w-full items-center gap-2 rounded px-3 text-left text-xs font-semibold text-sidebar-foreground hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  >
+                    <span aria-hidden="true" className="w-3 text-muted-foreground">
+                      {filtering || expandedHosts.has(host.id) ? '▾' : '▸'}
+                    </span>
+                    <span className={cn('h-2 w-2 shrink-0 rounded-full', host.online ? 'bg-success' : 'bg-muted-foreground')} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{host.name}</span>
+                      {host.name !== host.id && (
+                        <span className="block truncate font-mono text-[10px] font-normal text-muted-foreground">{host.id}</span>
+                      )}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{sessions.length}</span>
+                    {sessions.some(session => isAttentionStatus(session.status)) && (
+                      <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning">
+                        {sessions.filter(session => isAttentionStatus(session.status)).length}
+                      </span>
+                    )}
+                  </button>
+                  {(filtering || expandedHosts.has(host.id)) && (
+                    <ul className="ml-3 space-y-1 border-l border-sidebar-border pl-1">
+                      {sessions.map(session => renderSession(session))}
+                    </ul>
+                  )}
                 </li>
               ))}
             </ul>

@@ -42,8 +42,8 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
     onDetachSession: vi.fn(),
     ...overrides,
   }
-  renderStrict(<Sidebar {...props} />)
-  return props
+  const view = renderStrict(<Sidebar {...props} />)
+  return { props, ...view }
 }
 
 describe('state-driven Sidebar', () => {
@@ -72,12 +72,27 @@ describe('state-driven Sidebar', () => {
     expect(screen.getByText('claude')).toBeInTheDocument()
   })
 
-  it('promotes canonical pinned and recent targets without merging same-name sessions', () => {
+  it('groups every Session exactly once under its stable Host', () => {
     const calmWorkspace = buildWorkspaceViewModel(sessions, [], new Map(), hosts)
     renderSidebar({ workspace: calmWorkspace, pinnedTargets: ['host-a/work'], recentTargets: ['host-b/work'] })
-    expect(screen.getByText('Pinned · 1')).toBeInTheDocument()
-    expect(screen.getByText('Recent · 1')).toBeInTheDocument()
+    expect(screen.queryByText(/Pinned ·/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Recent ·/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse Duplicate Host (host-a) host sessions' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Collapse Duplicate Host (host-b) host sessions' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getAllByRole('button', { name: /Open Duplicate Host session work/ })).toHaveLength(2)
+  })
+
+  it('collapses Hosts independently and reopens the selected Host', async () => {
+    const { props, rerender } = renderSidebar({ selectedSession: null })
+    const hostA = screen.getByRole('button', { name: 'Collapse Duplicate Host (host-a) host sessions' })
+    await userEvent.click(hostA)
+    expect(screen.getByRole('button', { name: 'Expand Duplicate Host (host-a) host sessions' })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getAllByRole('button', { name: /Open Duplicate Host session work/ })).toHaveLength(1)
+
+    rerender(<Sidebar {...props} selectedSession="host-a/work" />)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Collapse Duplicate Host (host-a) host sessions' })).toHaveAttribute('aria-expanded', 'true')
+    })
   })
 
   it('makes detach an explicit browser-only action without a runtime mutation', async () => {

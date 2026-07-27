@@ -131,11 +131,13 @@ test('Chromium Workspace covers navigation, Terminal tools, recovery, feedback, 
   const pty = await capturePTY(page)
   await page.goto(baseURL)
 
-  // Sidebar derives attention states from canonical Host + Session targets.
-  await expect(page.getByText('Needs attention · 3')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open Alpha session work, Waiting' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open Beta session work, Error' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open Offline Host session sleep, Offline' })).toBeVisible()
+  // Sidebar owns every Session under exactly one expandable canonical Host.
+  await expect(page.getByRole('button', { name: 'Collapse Alpha (host-alpha) host sessions' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('button', { name: 'Collapse Beta (host-beta) host sessions' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('button', { name: 'Collapse Offline Host (host-offline) host sessions' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('button', { name: 'Open Alpha session work, Waiting' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Open Beta session work, Error' })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Open Offline Host session sleep, Offline' })).toHaveCount(1)
   await page.getByLabel('Filter sessions by status').selectOption('waiting')
   await expect(page.getByRole('button', { name: /session work, Waiting/ })).toHaveCount(1)
   await expect(page.getByRole('button', { name: /session work, Error/ })).toHaveCount(0)
