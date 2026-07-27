@@ -36,10 +36,6 @@ export function MobileInputComposer({
   const tooLarge = byteLength > MAX_TERMINAL_COMMAND_BODY_BYTES
 
   useEffect(() => {
-    onDraftChange(targetKey, draft)
-  }, [draft, onDraftChange, targetKey])
-
-  useEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
     textarea.style.height = 'auto'
@@ -126,7 +122,9 @@ export function MobileInputComposer({
               autoComplete="off"
               spellCheck={false}
               onChange={event => {
-                setDraft(event.target.value)
+                const nextDraft = event.target.value
+                setDraft(nextDraft)
+                onDraftChange(targetKey, nextDraft)
                 setError('')
                 setFeedback('')
               }}
