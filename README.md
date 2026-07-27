@@ -34,11 +34,12 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 
 ### Choose the role for each machine
 
-TmuxAtlas uses the same binary for three installation roles:
+TmuxAtlas uses the same binary for four installation roles:
 
 | Role | Use it when | What the installer starts |
 |------|-------------|----------------------------|
-| **Hub** | This machine hosts the Web UI and aggregates local and remote tmux sessions | `tmuxatlas server`, listening on loopback by default |
+| **Hub** | This machine hosts only the Web UI and aggregates remote Agent sessions | `tmuxatlas hub`, listening on loopback by default; no tmux dependency |
+| **Standalone** | One machine hosts the Web UI and contributes its own tmux sessions | `tmuxatlas standalone` (`server` remains a compatibility alias) |
 | **Agent** | This machine contributes its tmux sessions to an existing Hub | `tmuxatlas agent`, with an outbound-only WSS connection to the Hub |
 | **Binary** | You want to configure or run TmuxAtlas manually | Nothing; only the executable is installed |
 
@@ -48,8 +49,8 @@ long-running command is `tmuxatlas agent`, and the installer registers it as a
 background user service.
 
 The installer supports Linux (`systemd --user`) and macOS (`launchd`) on amd64
-and arm64. It requires `curl`, `tar`, and either `sha256sum` or `shasum`; Hub
-and Agent machines also need `tmux`.
+and arm64. It requires `curl`, `tar`, and either `sha256sum` or `shasum`;
+Standalone and Agent machines also need `tmux`. A pure Hub does not.
 
 ### Interactive installation
 
@@ -64,6 +65,8 @@ The script asks which role this machine should use:
 - **Hub** asks for the final browser-facing URL. Use the real HTTPS gateway
   hostname, such as `https://tmuxatlas.example.com`, before creating the first
   Passkey. For a local-only Hub, use `http://localhost:7654`.
+- **Standalone** asks for the same public URL and also configures this machine's
+  local tmux integration.
 - **Agent** asks for the trusted Hub URL and a current six-word pairing code
   generated on the Hub.
 - **Binary** skips role configuration and service creation.
@@ -93,10 +96,10 @@ For an unattended Hub installation:
 curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh |
   TMUXATLAS_ROLE=hub \
   TMUXATLAS_PUBLIC_URL=https://tmuxatlas.example.com \
-  TMUXATLAS_CONFIGURE_TMUX=yes sh
+  sh
 ```
 
-This installs and immediately starts:
+This installs and immediately starts a pure `tmuxatlas hub` service:
 
 | Platform | Service | Status and logs |
 |----------|---------|-----------------|
@@ -123,6 +126,7 @@ tmuxatlas doctor
 
 See [Multi-host and trusted gateway deployment](docs/multi-host.md) for
 Cloudflare Tunnel, Nginx+ACME, Passkey bootstrap, and reverse-proxy examples.
+For a hardened container deployment, see [Docker Hub deployment](docs/docker.md).
 
 ### 2. Add an Agent
 
@@ -185,8 +189,11 @@ curl -fsSL https://raw.githubusercontent.com/LosFurina/tmuxatlas/main/install.sh
 You can then configure and run either role manually:
 
 ```bash
-# Manual Hub
-TMUXATLAS_PUBLIC_URL=http://localhost:7654 tmuxatlas server
+# Manual pure Hub (no local tmux dependency)
+TMUXATLAS_PUBLIC_URL=http://localhost:7654 tmuxatlas hub
+
+# Manual standalone server (includes this machine's tmux sessions)
+TMUXATLAS_PUBLIC_URL=http://localhost:7654 tmuxatlas standalone
 
 # Manual Agent after running `tmuxatlas pair --hub ... --code ...`
 TMUXATLAS_HUB=https://tmuxatlas.example.com tmuxatlas agent
@@ -217,6 +224,11 @@ Use `tmuxatlas update --check` to check without installing,
 `--no-restart` to defer a service restart, or `--force` to reinstall the current
 version. Restarting clears in-memory browser sessions, so the next visit
 requires Passkey login.
+
+An immutable Docker deployment must be updated by pulling a new image and
+recreating the container. Inside a container, `tmuxatlas update` and recovery
+mutations fail closed; `tmuxatlas update --check` remains available. See
+[Docker Hub deployment](docs/docker.md#update-and-rollback).
 
 No token is needed for the public repository. If GitHub API rate limiting is a
 problem, set `GITHUB_TOKEN` or `GH_TOKEN` in the process environment.
@@ -540,10 +552,10 @@ process environment variables take precedence. Start from
 | `TMUXATLAS_LISTEN` | `127.0.0.1:7654` | HTTP/WS origin listen address |
 | `TMUXATLAS_PUBLIC_URL` | `http://localhost:7654` | Browser-facing absolute HTTP(S) URL; HTTPS enables Secure cookies |
 | `TMUXATLAS_SESSION_TTL` | `24h` | Idle time before Passkey login is required again; accepts Go durations such as `168h` |
-| `TMUXATLAS_SOCKET` | auto | Unix socket path for local CLI |
 | `TMUXATLAS_DISCOVERY_INTERVAL` | `2` | Session polling interval (seconds) |
 | `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
 | `TMUXATLAS_SOCKET` | platform default | Private Unix socket used by notify/agent-setup |
+| `TMUXATLAS_DEPLOYMENT` | `native` | Runtime packaging; the official container sets `docker` |
 | `TMUXATLAS_NO_AUTH` | `false` | Disable authentication |
 | `TMUXATLAS_HUB` | | Hub URL for peer mode; use the gateway's trusted HTTPS URL |
 | `TMUXATLAS_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
@@ -565,6 +577,10 @@ tmuxatlas server [flags]
       --hub string                Trusted hub URL for peer mode (e.g. https://tmuxatlas.example.com)
       --local-only                Only show local sessions in the web UI
 ```
+
+Use `tmuxatlas hub` for a remote-only Hub and `tmuxatlas standalone` when the
+same process should also expose local tmux sessions. `tmuxatlas server` remains
+an alias for standalone mode.
 
 ### Upgrading from guppi
 

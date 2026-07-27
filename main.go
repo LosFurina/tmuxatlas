@@ -15,6 +15,7 @@ import (
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/agent-setup"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/bootstrap"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/doctor"
+	_ "github.com/LosFurina/tmuxatlas/pkg/commands/healthcheck"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/install"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/notify"
 	_ "github.com/LosFurina/tmuxatlas/pkg/commands/pair"

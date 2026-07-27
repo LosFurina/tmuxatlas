@@ -1,0 +1,39 @@
+services:
+  hub:
+    image: ${TMUXATLAS_IMAGE:-ghcr.io/losfurina/tmuxatlas}:${TMUXATLAS_IMAGE_TAG:-latest}
+    pull_policy: ${TMUXATLAS_PULL_POLICY:-always}
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${TMUXATLAS_ORIGIN_PORT:-7654}:7654"
+    environment:
+      TMUXATLAS_PUBLIC_URL: ${TMUXATLAS_PUBLIC_URL:?Set TMUXATLAS_PUBLIC_URL to the final HTTPS URL}
+      TMUXATLAS_SESSION_TTL: ${TMUXATLAS_SESSION_TTL:-168h}
+      TMUXATLAS_LISTEN: 0.0.0.0:7654
+      TMUXATLAS_SOCKET: /run/tmuxatlas/tmuxatlas.sock
+      TMUXATLAS_DEPLOYMENT: docker
+      HOME: /var/lib/tmuxatlas/home
+      XDG_CONFIG_HOME: /var/lib/tmuxatlas/config
+      XDG_DATA_HOME: /var/lib/tmuxatlas/data
+      XDG_RUNTIME_DIR: /run/tmuxatlas
+    volumes:
+      - tmuxatlas-data:/var/lib/tmuxatlas
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+      - /run/tmuxatlas:rw,noexec,nosuid,nodev,mode=0700,uid=65532,gid=65532
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/tmuxatlas", "healthcheck", "--role", "hub", "--deployment", "docker"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+
+volumes:
+  tmuxatlas-data:
+    name: ${TMUXATLAS_VOLUME:-tmuxatlas-data}

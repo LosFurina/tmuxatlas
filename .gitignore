@@ -3,6 +3,7 @@ dist/
 /public/
 .env*
 !.env.example
+!.env.docker.example
 *.key
 tmp/
 web/node_modules/

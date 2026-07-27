@@ -106,95 +106,79 @@ func validateNoAuthMode(noAuth bool, listenAddress string, publicURL *url.URL) e
 }
 
 func Execute(ctx context.Context, c *cli.Command) error {
-	// Initialize tmux client
-	client, err := tmux.NewClient()
-	if err != nil {
-		return err
-	}
+	return execute(ctx, c, false)
+}
 
-	// Initialize state manager
-	stateMgr := state.NewManager(client)
+func ExecuteHub(ctx context.Context, c *cli.Command) error {
+	return execute(ctx, c, true)
+}
 
-	// Initialize tool event tracker
+func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 	tracker := toolevents.NewTracker()
-
-	// Initialize activity tracker
 	actTracker := activity.NewTracker()
-
-	// Start session discovery in background
-	interval := time.Duration(c.Int("discovery-interval")) * time.Second
-	discovery := tmux.NewDiscovery(client, interval, func(sessions []*tmux.Session) {
-		stateMgr.UpdateSessions(sessions)
-	})
-	go discovery.Run(ctx)
-
-	// Start tool event reconciler — clears stale notifications when the
-	// agent process is no longer running in the pane
-	reconciler := toolevents.NewReconciler(tracker, func(paneID string) toolevents.PaneState {
-		panes, err := client.ListAllPanes()
+	var (
+		client         *tmux.Client
+		stateMgr       *state.Manager
+		detector       *toolevents.Detector
+		silenceMonitor *toolevents.SilenceMonitor
+	)
+	if !pureHub {
+		var err error
+		client, err = tmux.NewClient()
 		if err != nil {
-			return toolevents.PaneState{Exists: false}
+			return err
 		}
-		for _, p := range panes {
-			if p.ID == paneID {
-				return toolevents.PaneState{Exists: true, CurrentCommand: p.CurrentCommand, PID: p.PID}
+		stateMgr = state.NewManager(client)
+		interval := time.Duration(c.Int("discovery-interval")) * time.Second
+		discovery := tmux.NewDiscovery(client, interval, stateMgr.UpdateSessions)
+		go discovery.Run(ctx)
+
+		reconciler := toolevents.NewReconciler(tracker, func(paneID string) toolevents.PaneState {
+			panes, err := client.ListAllPanes()
+			if err != nil {
+				return toolevents.PaneState{Exists: false}
 			}
-		}
-		return toolevents.PaneState{Exists: false}
-	}, 3*time.Second)
-	go reconciler.Run(ctx)
-
-	// Start agent detector — scans pane process trees for known agents
-	// and records synthetic events for panes without hook-based tracking
-	detector := toolevents.NewDetector(tracker, func() []toolevents.PaneInfo {
-		panes, err := client.ListAllPanesDetailed()
-		if err != nil {
-			return nil
-		}
-		var infos []toolevents.PaneInfo
-		for _, p := range panes {
-			infos = append(infos, toolevents.PaneInfo{
-				PaneID:  p.ID,
-				Session: p.Session,
-				Window:  p.Window,
-				PID:     p.PID,
-			})
-		}
-		return infos
-	}, 5*time.Second)
-	go detector.Run(ctx)
-
-	// Start silence monitor — detects when non-Claude agents go quiet and
-	// inspects pane content for input prompts
-	silenceMonitor := toolevents.NewSilenceMonitor(tracker, detector, client)
-	go silenceMonitor.Run(ctx)
-
-	// Start control mode for event-driven state updates
-	if !c.Bool("no-control-mode") {
-		fallbackInterval := 30 * time.Second
-		ctrlMode := tmux.NewControlMode(client, func(sessions []*tmux.Session) {
-			stateMgr.UpdateSessions(sessions)
-		},
-			tmux.WithOnConnect(func() {
-				discovery.SetInterval(fallbackInterval)
-			}),
-			tmux.WithOnDisconnect(func() {
-				discovery.SetInterval(interval)
-			}),
-			tmux.WithOnOutput(func(paneID string, dataLen int) {
-				session := stateMgr.SessionForPane(paneID)
-				if session != "" {
-					actTracker.Record(session, dataLen)
+			for _, p := range panes {
+				if p.ID == paneID {
+					return toolevents.PaneState{Exists: true, CurrentCommand: p.CurrentCommand, PID: p.PID}
 				}
-				silenceMonitor.RecordOutput(paneID)
-			}),
-		)
-		go ctrlMode.Run(ctx)
-	}
+			}
+			return toolevents.PaneState{Exists: false}
+		}, 3*time.Second)
+		go reconciler.Run(ctx)
 
-	// Start inactivity promoter — generates synthetic "waiting" events for
-	// tools that lack native waiting detection (copilot, codex, opencode)
-	go tracker.RunInactivityPromoter(ctx, toolevents.DefaultInactivityTimeout)
+		detector = toolevents.NewDetector(tracker, func() []toolevents.PaneInfo {
+			panes, err := client.ListAllPanesDetailed()
+			if err != nil {
+				return nil
+			}
+			infos := make([]toolevents.PaneInfo, 0, len(panes))
+			for _, p := range panes {
+				infos = append(infos, toolevents.PaneInfo{
+					PaneID: p.ID, Session: p.Session, Window: p.Window, PID: p.PID,
+				})
+			}
+			return infos
+		}, 5*time.Second)
+		go detector.Run(ctx)
+		silenceMonitor = toolevents.NewSilenceMonitor(tracker, detector, client)
+		go silenceMonitor.Run(ctx)
+
+		if !c.Bool("no-control-mode") {
+			ctrlMode := tmux.NewControlMode(client, stateMgr.UpdateSessions,
+				tmux.WithOnConnect(func() { discovery.SetInterval(30 * time.Second) }),
+				tmux.WithOnDisconnect(func() { discovery.SetInterval(interval) }),
+				tmux.WithOnOutput(func(paneID string, dataLen int) {
+					if session := stateMgr.SessionForPane(paneID); session != "" {
+						actTracker.Record(session, dataLen)
+					}
+					silenceMonitor.RecordOutput(paneID)
+				}),
+			)
+			go ctrlMode.Run(ctx)
+		}
+		go tracker.RunInactivityPromoter(ctx, toolevents.DefaultInactivityTimeout)
+	}
 
 	// Initialize preferences store
 	prefStore, err := preferences.NewStore()
@@ -273,13 +257,20 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 
 	// Initialize peer manager
-	peerMgr := peer.NewManager(nodeIdentity, peerStore, stateMgr)
-	go peerMgr.Run()
+	var peerMgr *peer.Manager
+	if pureHub {
+		peerMgr = peer.NewHubManager(nodeIdentity, peerStore)
+	} else {
+		peerMgr = peer.NewManager(nodeIdentity, peerStore, stateMgr)
+	}
+	go peerMgr.RunContext(ctx)
 
 	// Stamp local host identity on detector and silence monitor so
 	// auto-detected events include the host info for multi-host navigation
-	detector.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
-	silenceMonitor.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
+	if detector != nil {
+		detector.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
+		silenceMonitor.SetHost(peerMgr.LocalID(), peerMgr.LocalName())
+	}
 
 	// Initialize pairing manager
 	pairingMgr := identity.NewPairingManager()
@@ -291,9 +282,13 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	peerHandler := peer.NewHandler(peerMgr, peerStore, tracker, pairingMgr, ptyRelay, publicURL.String())
 
 	// If --hub is set, connect to the hub as a peer
-	hubURL := c.String("hub")
-	localOnly := c.Bool("local-only")
-	if hubURL != "" {
+	hubURL := ""
+	localOnly := false
+	if !pureHub {
+		hubURL = c.String("hub")
+		localOnly = c.Bool("local-only")
+	}
+	if !pureHub && hubURL != "" {
 		peerClient := peer.NewClient(
 			hubURL, nodeIdentity, peerStore,
 			stateMgr, peerMgr, actTracker, tracker,
@@ -329,6 +324,8 @@ func Execute(ctx context.Context, c *cli.Command) error {
 		PTYRelay:        ptyRelay,
 		Detector:        detector,
 		LocalOnly:       localOnly,
+		Role:            map[bool]string{true: "hub", false: "standalone"}[pureHub],
+		Deployment:      os.Getenv("TMUXATLAS_DEPLOYMENT"),
 	}
 
 	// Start the HTTP server (blocks until ctx is cancelled)
@@ -389,36 +386,81 @@ func serverFlags() []cli.Flag {
 	}
 }
 
+func hubFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name: "listen", Usage: "HTTP origin listen address",
+			Sources: cli.EnvVars("TMUXATLAS_LISTEN"), Value: defaultListenAddress,
+		},
+		&cli.StringFlag{
+			Name: "public-url", Usage: "Externally reachable HTTP(S) URL; HTTPS enables Secure cookies",
+			Sources: cli.EnvVars("TMUXATLAS_PUBLIC_URL"), Value: "http://localhost:7654",
+		},
+		&cli.DurationFlag{
+			Name: "session-ttl", Usage: "Idle time before a browser session requires Passkey login again",
+			Sources: cli.EnvVars("TMUXATLAS_SESSION_TTL"), Value: 24 * time.Hour,
+		},
+		&cli.StringFlag{
+			Name: "socket", Usage: "Unix socket path for local administration",
+			Sources: cli.EnvVars("TMUXATLAS_SOCKET"),
+		},
+		&cli.BoolFlag{
+			Name: "no-auth", Usage: "Disable authentication (loopback development only)",
+			Sources: cli.EnvVars("TMUXATLAS_NO_AUTH"),
+		},
+	}
+}
+
+func validateServerCommand(ctx context.Context, c *cli.Command) (context.Context, error) {
+	if err := validateRemovedTransportEnv(); err != nil {
+		return ctx, err
+	}
+	if err := validateListenAddress(c.String("listen")); err != nil {
+		return ctx, err
+	}
+	publicURL, err := validatePublicURL(c.String("public-url"))
+	if err != nil {
+		return ctx, err
+	}
+	if err := validateNoAuthMode(c.Bool("no-auth"), c.String("listen"), publicURL); err != nil {
+		return ctx, err
+	}
+	return ctx, nil
+}
+
+func validateStandaloneCommand(ctx context.Context, c *cli.Command) (context.Context, error) {
+	ctx, err := validateServerCommand(ctx, c)
+	if err != nil {
+		return ctx, err
+	}
+	logrus.Info("checking for tmux...")
+	if _, err := tmux.NewClient(); err != nil {
+		return ctx, err
+	}
+	logrus.Info("tmux found")
+	return ctx, nil
+}
+
 func init() {
-	cmd := &cli.Command{
+	serverCommand := &cli.Command{
 		Name:        "server",
 		Usage:       "start the TmuxAtlas web server",
 		Description: "starts the web dashboard for monitoring and interacting with tmux sessions",
 		Flags:       serverFlags(),
 		Action:      Execute,
-		Before: func(ctx context.Context, c *cli.Command) (context.Context, error) {
-			if err := validateRemovedTransportEnv(); err != nil {
-				return ctx, err
-			}
-			if err := validateListenAddress(c.String("listen")); err != nil {
-				return ctx, err
-			}
-			publicURL, err := validatePublicURL(c.String("public-url"))
-			if err != nil {
-				return ctx, err
-			}
-			if err := validateNoAuthMode(c.Bool("no-auth"), c.String("listen"), publicURL); err != nil {
-				return ctx, err
-			}
-			logrus.Info("checking for tmux...")
-			_, err = tmux.NewClient()
-			if err != nil {
-				return ctx, err
-			}
-			logrus.Info("tmux found")
-			return ctx, nil
-		},
+		Before:      validateStandaloneCommand,
 	}
-
-	common.RegisterCommand(cmd)
+	standaloneCommand := &cli.Command{
+		Name: "standalone", Usage: "start Hub with local tmux integration",
+		Description: "explicit alias for the backward-compatible server runtime",
+		Flags:       serverFlags(), Action: Execute, Before: validateStandaloneCommand,
+	}
+	hubCommand := &cli.Command{
+		Name: "hub", Usage: "start the remote-only TmuxAtlas Hub",
+		Description: "starts Web, Passkey, Peer and remote PTY services without tmux integration",
+		Flags:       hubFlags(), Action: ExecuteHub, Before: validateServerCommand,
+	}
+	common.RegisterCommand(serverCommand)
+	common.RegisterCommand(standaloneCommand)
+	common.RegisterCommand(hubCommand)
 }

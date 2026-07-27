@@ -35,7 +35,7 @@ func TestPeerFlowsThroughReverseProxy(t *testing.T) {
 	}
 	pairing := identity.NewPairingManager()
 	relay := NewPTYRelay()
-	manager := NewManager(hubIdentity, peerStore, nil)
+	manager := NewHubManager(hubIdentity, peerStore)
 	backendMux := http.NewServeMux()
 	backend := httptest.NewServer(backendMux)
 	defer backend.Close()

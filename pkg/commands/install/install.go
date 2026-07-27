@@ -27,6 +27,7 @@ Restart=on-failure
 RestartSec=5
 Environment=PATH={{.Path}}
 Environment={{.EnvironmentName}}={{.EnvironmentValue}}
+Environment=TMUXATLAS_ROLE={{.Role}}
 
 [Install]
 WantedBy=default.target
@@ -57,6 +58,8 @@ const launchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>{{.Path}}</string>
 		<key>{{.EnvironmentName}}</key>
 		<string>{{.EnvironmentValue}}</string>
+		<key>TMUXATLAS_ROLE</key>
+		<string>{{.Role}}</string>
 	</dict>
 </dict>
 </plist>
@@ -73,6 +76,7 @@ type serviceConfig struct {
 	LogName          string
 	EnvironmentName  string
 	EnvironmentValue string
+	Role             string
 }
 
 type serviceRole struct {
@@ -87,7 +91,7 @@ type serviceRole struct {
 
 func roleFromCommand(c *cli.Command) (serviceRole, error) {
 	switch c.String("mode") {
-	case "server", "hub":
+	case "server":
 		publicURL, err := validatePublicURL(c.String("public-url"))
 		if err != nil {
 			return serviceRole{}, err
@@ -96,6 +100,17 @@ func roleFromCommand(c *cli.Command) (serviceRole, error) {
 			mode: "server", command: "server", systemdName: "tmuxatlas.service",
 			launchdLabel:    "com.tmuxatlas.server",
 			description:     "TmuxAtlas - Web dashboard for tmux sessions",
+			environmentName: "TMUXATLAS_PUBLIC_URL", environmentValue: publicURL,
+		}, nil
+	case "hub":
+		publicURL, err := validatePublicURL(c.String("public-url"))
+		if err != nil {
+			return serviceRole{}, err
+		}
+		return serviceRole{
+			mode: "hub", command: "hub", systemdName: "tmuxatlas.service",
+			launchdLabel:    "com.tmuxatlas.server",
+			description:     "TmuxAtlas - Remote-only Hub",
 			environmentName: "TMUXATLAS_PUBLIC_URL", environmentValue: publicURL,
 		}, nil
 	case "agent":
@@ -110,7 +125,7 @@ func roleFromCommand(c *cli.Command) (serviceRole, error) {
 			environmentName: "TMUXATLAS_HUB", environmentValue: hubURL,
 		}, nil
 	default:
-		return serviceRole{}, fmt.Errorf("mode must be server or agent")
+		return serviceRole{}, fmt.Errorf("mode must be server, hub, or agent")
 	}
 }
 
@@ -172,6 +187,7 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 		BinaryPath: binPath, ExecStart: binPath + " " + role.command,
 		Path: os.Getenv("PATH"), Description: role.description,
 		EnvironmentName: role.environmentName, EnvironmentValue: role.environmentValue,
+		Role: role.mode,
 	}
 
 	tmpl, err := template.New("systemd").Parse(systemdUnit)
@@ -192,7 +208,7 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	fmt.Printf("Wrote %s\n", unitPath)
 
 	otherService := "tmuxatlas.service"
-	if role.mode == "server" {
+	if role.mode != "agent" {
 		otherService = "tmuxatlas-agent.service"
 	}
 	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", "--now", otherService).Run()
@@ -218,7 +234,7 @@ func installLinux(ctx context.Context, c *cli.Command) error {
 	fmt.Printf("  Status:   systemctl --user status %s\n", role.systemdName)
 	fmt.Printf("  Logs:     journalctl --user -u %s -f\n", role.systemdName)
 	fmt.Printf("  Restart:  systemctl --user restart %s\n", role.systemdName)
-	if role.mode == "server" {
+	if role.mode != "agent" {
 		fmt.Printf("  Web UI:   %s\n", role.environmentValue)
 	} else {
 		fmt.Printf("  Hub:      %s\n", role.environmentValue)
@@ -254,6 +270,7 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 		Command: role.command, Label: role.launchdLabel,
 		LogName: role.launchdLabel, EnvironmentName: role.environmentName,
 		EnvironmentValue: role.environmentValue,
+		Role:             role.mode,
 	}
 
 	tmpl, err := template.New("launchd").Parse(launchdPlist)
@@ -306,6 +323,9 @@ func installDarwin(ctx context.Context, c *cli.Command) error {
 }
 
 func installExecute(ctx context.Context, c *cli.Command) error {
+	if strings.EqualFold(os.Getenv("TMUXATLAS_DEPLOYMENT"), "docker") {
+		return fmt.Errorf("service installation is unavailable in Docker; use docker compose lifecycle commands on the host")
+	}
 	switch runtime.GOOS {
 	case "linux":
 		return installLinux(ctx, c)
@@ -367,6 +387,9 @@ func uninstallDarwin(ctx context.Context, c *cli.Command) error {
 }
 
 func uninstallExecute(ctx context.Context, c *cli.Command) error {
+	if strings.EqualFold(os.Getenv("TMUXATLAS_DEPLOYMENT"), "docker") {
+		return fmt.Errorf("service removal is unavailable in Docker; use docker compose lifecycle commands on the host")
+	}
 	switch runtime.GOOS {
 	case "linux":
 		return uninstallLinux(ctx, c)
@@ -389,7 +412,7 @@ Agent mode installs tmuxatlas-agent.service or com.tmuxatlas.agent and opens no 
 Use "tmuxatlas install" to install and enable, "tmuxatlas uninstall" to remove.`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name: "mode", Usage: "Service role: server or agent",
+				Name: "mode", Usage: "Service role: server, hub, or agent",
 				Value: "server", Sources: cli.EnvVars("TMUXATLAS_ROLE"),
 			},
 			&cli.StringFlag{

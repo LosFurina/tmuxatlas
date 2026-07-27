@@ -48,24 +48,27 @@ prompt_role() {
 		fi
 		while :; do
 			printf '%s\n' 'How will this machine run TmuxAtlas?' >/dev/tty
-			printf '%s\n' '  1) Hub    — Web UI and inbound peer connections' >/dev/tty
-			printf '%s\n' '  2) Agent  — outbound-only tmux agent' >/dev/tty
-			printf '%s\n' '  3) Binary — install without configuration or service' >/dev/tty
-			printf 'Select [1-3]: ' >/dev/tty
+			printf '%s\n' '  1) Hub        — Web UI and remote Agents; no local tmux' >/dev/tty
+			printf '%s\n' '  2) Standalone — Web UI plus this machine'\''s tmux sessions' >/dev/tty
+			printf '%s\n' '  3) Agent      — outbound-only tmux agent' >/dev/tty
+			printf '%s\n' '  4) Binary     — install without configuration or service' >/dev/tty
+			printf 'Select [1-4]: ' >/dev/tty
 			IFS= read -r answer </dev/tty || answer=""
 			case "$answer" in
 				1 | hub | Hub) role="hub"; break ;;
-				2 | agent | Agent) role="agent"; break ;;
-				3 | binary | Binary) role="binary"; break ;;
-				*) printf 'Enter 1, 2, or 3.\n' >/dev/tty ;;
+				2 | standalone | Standalone) role="standalone"; break ;;
+				3 | agent | Agent) role="agent"; break ;;
+				4 | binary | Binary) role="binary"; break ;;
+				*) printf 'Enter 1, 2, 3, or 4.\n' >/dev/tty ;;
 			esac
 		done
 	fi
 	case "$role" in
-		hub | server) role="hub" ;;
+		hub) ;;
+		standalone | server) role="standalone" ;;
 		agent) ;;
 		binary | none) role="binary" ;;
-		*) fail "TMUXATLAS_ROLE must be hub, agent, or binary" ;;
+		*) fail "TMUXATLAS_ROLE must be hub, standalone, agent, or binary" ;;
 	esac
 }
 
@@ -128,14 +131,14 @@ save_environment() {
 
 	if [ -f "$env_file" ]; then
 		case "$role" in
-			hub) awk '$0 !~ /^[[:space:]]*TMUXATLAS_PUBLIC_URL=/' "$env_file" >"$temp_env" ;;
+			hub | standalone) awk '$0 !~ /^[[:space:]]*TMUXATLAS_PUBLIC_URL=/' "$env_file" >"$temp_env" ;;
 			agent) awk '$0 !~ /^[[:space:]]*TMUXATLAS_HUB=/' "$env_file" >"$temp_env" ;;
 		esac
 	else
 		: >"$temp_env"
 	fi
 	case "$role" in
-		hub) printf 'TMUXATLAS_PUBLIC_URL=%s\n' "$public_url" >>"$temp_env" ;;
+		hub | standalone) printf 'TMUXATLAS_PUBLIC_URL=%s\n' "$public_url" >>"$temp_env" ;;
 		agent) printf 'TMUXATLAS_HUB=%s\n' "$hub_url" >>"$temp_env" ;;
 	esac
 	umask 077
@@ -207,7 +210,7 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 prompt_role
 case "$role" in
-	hub) prompt_public_url ;;
+	hub | standalone) prompt_public_url ;;
 	agent)
 		prompt_hub_url
 		prompt_pair_code
@@ -278,10 +281,15 @@ case ":${PATH}:" in
 	*":${install_dir}:"*) ;;
 	*) log "Add ${install_dir} to PATH before running tmuxatlas." ;;
 esac
-prompt_tmux_configuration
+case "$role" in
+	standalone | agent) prompt_tmux_configuration ;;
+esac
 
 case "$role" in
 	hub)
+		"${install_dir}/tmuxatlas" install --mode hub --public-url "$public_url"
+		;;
+	standalone)
 		"${install_dir}/tmuxatlas" install --mode server --public-url "$public_url"
 		;;
 	agent)

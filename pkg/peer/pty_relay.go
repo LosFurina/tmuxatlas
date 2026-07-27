@@ -101,6 +101,12 @@ func (relay *PTYRelay) CompletePending(streamID, hostID string, generation uint6
 		relay.mu.Unlock()
 		return false
 	}
+	select {
+	case <-owner.ctx.Done():
+		relay.mu.Unlock()
+		return false
+	default:
+	}
 	delete(relay.pending, streamID)
 	relay.active[streamID] = owner
 	owner.mu.Lock()

@@ -44,7 +44,7 @@ func (router *ActionRouter) Execute(ctx context.Context, operation string, targe
 	if operation != "new" && !router.manager.HasSession(target.HostID, target.Session) {
 		return ActionResponse{}, RuntimeError{RequestID: requestID, Code: ErrorNotFound}
 	}
-	if target.HostID == router.manager.LocalID() {
+	if router.manager.IsLocal(target.HostID) {
 		if router.local == nil {
 			return ActionResponse{}, RuntimeError{RequestID: requestID, Code: ErrorExecutionFailed}
 		}

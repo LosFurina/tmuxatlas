@@ -38,6 +38,8 @@ import (
 )
 
 type Options struct {
+	Role             string
+	Deployment       string
 	ListenAddress    string
 	PublicURL        string
 	SecureCookies    bool
@@ -288,8 +290,12 @@ func Run(ctx context.Context, opts *Options) error {
 		return fmt.Errorf("ingress policy: %w", err)
 	}
 	var actionRouter *peer.ActionRouter
-	if opts.PeerMgr != nil && opts.Client != nil {
-		actionRouter = peer.NewActionRouter(opts.PeerMgr, peer.NewTmuxRuntimeExecutor(opts.Client), 10*time.Second)
+	if opts.PeerMgr != nil {
+		var localExecutor peer.RuntimeExecutor
+		if opts.Client != nil {
+			localExecutor = peer.NewTmuxRuntimeExecutor(opts.Client)
+		}
+		actionRouter = peer.NewActionRouter(opts.PeerMgr, localExecutor, 10*time.Second)
 	}
 
 	publicRouter := chi.NewRouter()
@@ -348,6 +354,10 @@ func Run(ctx context.Context, opts *Options) error {
 			// Agent status — check which agents are installed/configured
 			r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				if opts.Role == "hub" {
+					json.NewEncoder(w).Encode(map[string]any{})
+					return
+				}
 				json.NewEncoder(w).Encode(agentcheck.CheckAgents())
 			})
 
@@ -411,7 +421,9 @@ func Run(ctx context.Context, opts *Options) error {
 			})
 
 			mutations.Delete("/tool-events", func(w http.ResponseWriter, r *http.Request) {
-				opts.Tracker.ClearAll()
+				if opts.Tracker != nil {
+					opts.Tracker.ClearAll()
+				}
 				if _, err := coordinator.ClearToolEvents(r.Context(), "", "", 0, ""); err != nil {
 					http.Error(w, err.Error(), http.StatusServiceUnavailable)
 					return
@@ -430,7 +442,9 @@ func Run(ctx context.Context, opts *Options) error {
 					http.Error(w, "session is required", http.StatusBadRequest)
 					return
 				}
-				opts.Tracker.Clear(req.Host, req.Session, req.Window, req.Pane)
+				if opts.Tracker != nil {
+					opts.Tracker.Clear(req.Host, req.Session, req.Window, req.Pane)
+				}
 				if _, err := coordinator.ClearToolEvents(
 					r.Context(), req.Host, req.Session, req.Window, req.Pane,
 				); err != nil {
@@ -501,6 +515,10 @@ func Run(ctx context.Context, opts *Options) error {
 					}
 				}
 
+				systemStats := map[string]interface{}{}
+				if opts.Role != "hub" {
+					systemStats = stats.SystemStats()
+				}
 				result := map[string]interface{}{
 					"sessions": map[string]int{
 						"total":    len(sessions),
@@ -516,7 +534,7 @@ func Run(ctx context.Context, opts *Options) error {
 						"error":   errorAgents,
 					},
 					"processes": stats.ProcessCountsFromSessions(sessions),
-					"system":    stats.SystemStats(),
+					"system":    systemStats,
 				}
 
 				w.Header().Set("Content-Type", "application/json")
@@ -663,7 +681,10 @@ func Run(ctx context.Context, opts *Options) error {
 	}
 	go hub.Run()
 
-	ptyHandler := ws.NewPTYTerminalHandler(opts.Client.TmuxPath(), opts.ActivityTracker)
+	var ptyHandler *ws.PTYTerminalHandler
+	if opts.Client != nil {
+		ptyHandler = ws.NewPTYTerminalHandler(opts.Client.TmuxPath(), opts.ActivityTracker)
+	}
 
 	if opts.AuthEnabled {
 		authMw := auth.Middleware(opts.SessionMgr, opts.SecureCookies)
@@ -678,6 +699,10 @@ func Run(ctx context.Context, opts *Options) error {
 				handleRemoteSession(w, req, opts, hostID)
 				return
 			}
+			if ptyHandler == nil {
+				writeRuntimeError(w, peer.RuntimeError{Code: peer.ErrorCapabilityUnsupported})
+				return
+			}
 			ptyHandler.HandleSession(w, req)
 		})
 	} else {
@@ -690,6 +715,10 @@ func Run(ctx context.Context, opts *Options) error {
 			}
 			if !opts.PeerMgr.IsLocal(hostID) {
 				handleRemoteSession(w, req, opts, hostID)
+				return
+			}
+			if ptyHandler == nil {
+				writeRuntimeError(w, peer.RuntimeError{Code: peer.ErrorCapabilityUnsupported})
 				return
 			}
 			ptyHandler.HandleSession(w, req)
@@ -762,8 +791,16 @@ func Run(ctx context.Context, opts *Options) error {
 	if err != nil {
 		logger.WithError(err).Warn("failed to listen on unix socket, notify via socket will be unavailable")
 	} else {
+		role := opts.Role
+		if role == "" {
+			role = "standalone"
+		}
+		health := nativeHealth(role, coordinator.InstanceID(), true)
+		if opts.Deployment != "" {
+			health.Deployment = opts.Deployment
+		}
 		localServer := &http.Server{
-			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, nativeHealth("standalone", coordinator.InstanceID(), true)),
+			Handler:           newLocalRouter(opts.Tracker, opts.PeerMgr, opts.PairingMgr, opts.PasskeyManager, health),
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 		go func() {

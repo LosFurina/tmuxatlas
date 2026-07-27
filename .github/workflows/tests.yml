@@ -82,3 +82,40 @@ jobs:
             web/playwright-report
             web/test-results
           retention-days: 7
+
+  container:
+    needs: [frontend, go]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate Hub image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tmuxatlas:ci
+          build-args: |
+            VERSION=ci
+            BRANCH=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=container-ci
+          cache-to: type=gha,mode=max,scope=container-ci
+      - name: Verify hardened Compose and persistent Hub identity
+        env:
+          TMUXATLAS_TEST_PROJECT: tmuxatlas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          TMUXATLAS_TEST_VOLUME: tmuxatlas-ci-${{ github.run_id }}-${{ github.run_attempt }}-data
+        run: ./scripts/container-smoke.sh
+      - name: Upload container diagnostics
+        if: failure()
+        run: |
+          docker compose -p "$TMUXATLAS_TEST_PROJECT" ps || true
+          docker compose -p "$TMUXATLAS_TEST_PROJECT" logs --no-color || true
+        env:
+          TMUXATLAS_TEST_PROJECT: tmuxatlas-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          TMUXATLAS_IMAGE: tmuxatlas
+          TMUXATLAS_IMAGE_TAG: ci
+          TMUXATLAS_PULL_POLICY: never
+          TMUXATLAS_PUBLIC_URL: https://staging.example.com
+          TMUXATLAS_ORIGIN_PORT: 17655
+          TMUXATLAS_VOLUME: tmuxatlas-ci-${{ github.run_id }}-${{ github.run_attempt }}-data

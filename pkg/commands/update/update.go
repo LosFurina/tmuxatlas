@@ -252,6 +252,18 @@ func normalizeVersion(value string) string {
 }
 
 func execute(ctx context.Context, c *cli.Command) error {
+	if strings.EqualFold(os.Getenv("TMUXATLAS_DEPLOYMENT"), "docker") {
+		if !c.Bool("check") || c.Bool("rollback") || c.Bool("recover") || c.Bool("force") {
+			return fmt.Errorf("binary update and rollback are unavailable in Docker; pin the desired image tag or digest, run `docker compose pull` and `docker compose up -d`, verify health, and recreate the previous image to roll back without removing the volume")
+		}
+		result, err := newUpdater(c.String("repository")).latest(ctx)
+		if err != nil {
+			return fmt.Errorf("check latest release: %w", err)
+		}
+		fmt.Printf("Current: %s\nLatest:  %s\n", common.SUMMARY, result.Tag)
+		fmt.Println("Docker deployment: update the image tag or digest, then run `docker compose pull` and `docker compose up -d`.")
+		return nil
+	}
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return fmt.Errorf("self-update is not supported on %s", runtime.GOOS)
 	}

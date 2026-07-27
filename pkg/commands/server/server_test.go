@@ -66,6 +66,25 @@ func TestServerFlagsUseHTTPOriginConfiguration(t *testing.T) {
 	}
 }
 
+func TestHubFlagsExcludeTmuxIntegration(t *testing.T) {
+	names := map[string]bool{}
+	for _, flag := range hubFlags() {
+		for _, name := range flag.Names() {
+			names[name] = true
+		}
+	}
+	for _, required := range []string{"listen", "public-url", "session-ttl", "socket"} {
+		if !names[required] {
+			t.Errorf("missing Hub flag %q", required)
+		}
+	}
+	for _, local := range []string{"discovery-interval", "no-control-mode", "hub", "local-only"} {
+		if names[local] {
+			t.Errorf("pure Hub exposed local integration flag %q", local)
+		}
+	}
+}
+
 func TestRemovedTransportEnvironmentRejected(t *testing.T) {
 	t.Setenv("TMUXATLAS_TLS_CERT", "/tmp/cert.pem")
 	err := validateRemovedTransportEnv()

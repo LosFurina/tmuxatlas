@@ -20,6 +20,12 @@ const (
 // ConfigDir returns the TmuxAtlas configuration directory. Existing data from
 // ~/.config/guppi is copied on first use without deleting the rollback source.
 func ConfigDir() (string, error) {
+	if xdgDir := os.Getenv("XDG_CONFIG_HOME"); xdgDir != "" {
+		return ensureMigratedDir(
+			filepath.Join(xdgDir, AppName),
+			filepath.Join(xdgDir, legacyAppName),
+		)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)

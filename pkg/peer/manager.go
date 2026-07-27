@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -46,6 +47,7 @@ type Manager struct {
 
 	localID     string // this node's fingerprint
 	localName   string
+	hasLocal    bool
 	identity    *identity.Identity
 	peerStore   *identity.PeerStore
 	localMgr    *state.Manager
@@ -58,26 +60,37 @@ type Manager struct {
 
 // NewManager creates a new peer manager
 func NewManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager) *Manager {
+	return newManager(id, peerStore, localMgr, true)
+}
+
+// NewHubManager creates a remote-only manager. The Hub identity authenticates
+// peer traffic but is deliberately not registered as a tmux-capable host.
+func NewHubManager(id *identity.Identity, peerStore *identity.PeerStore) *Manager {
+	return newManager(id, peerStore, nil, false)
+}
+
+func newManager(id *identity.Identity, peerStore *identity.PeerStore, localMgr *state.Manager, hasLocal bool) *Manager {
 	m := &Manager{
 		hosts:       make(map[string]*HostState),
 		localID:     id.Fingerprint(),
 		localName:   id.Name,
+		hasLocal:    hasLocal,
 		identity:    id,
 		peerStore:   peerStore,
 		localMgr:    localMgr,
 		generations: make(map[string]uint64),
 	}
 
-	// Register local host
-	m.hosts[m.localID] = &HostState{
-		ID:        m.localID,
-		Name:      id.Name,
-		Version:   common.VERSION,
-		PublicKey: id.PublicKey,
-		Connected: true,
-		LastSeen:  time.Now(),
+	if hasLocal {
+		m.hosts[m.localID] = &HostState{
+			ID:        m.localID,
+			Name:      id.Name,
+			Version:   common.VERSION,
+			PublicKey: id.PublicKey,
+			Connected: true,
+			LastSeen:  time.Now(),
+		}
 	}
-
 	return m
 }
 
@@ -92,24 +105,37 @@ func (m *Manager) updateLocalStats() {
 // Run starts forwarding local state events to peer manager subscribers
 // and pruning offline peers
 func (m *Manager) Run() {
-	// Forward local state events
-	localCh := m.localMgr.Subscribe()
-	defer m.localMgr.Unsubscribe(localCh)
+	m.RunContext(context.Background())
+}
 
+// RunContext forwards optional local state and prunes remote peers until the
+// runtime is cancelled.
+func (m *Manager) RunContext(ctx context.Context) {
+	var localCh chan state.StateEvent
+	if m.localMgr != nil {
+		localCh = m.localMgr.Subscribe()
+		defer m.localMgr.Unsubscribe(localCh)
+	}
 	pruneTimer := time.NewTicker(30 * time.Second)
 	defer pruneTimer.Stop()
 
-	statsTimer := time.NewTicker(30 * time.Second)
-	defer statsTimer.Stop()
-
-	// Collect initial stats
-	m.updateLocalStats()
+	var statsTimer *time.Ticker
+	var statsC <-chan time.Time
+	if m.localMgr != nil {
+		statsTimer = time.NewTicker(30 * time.Second)
+		statsC = statsTimer.C
+		defer statsTimer.Stop()
+		m.updateLocalStats()
+	}
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case evt, ok := <-localCh:
 			if !ok {
-				return
+				localCh = nil
+				continue
 			}
 			// Stamp with local host info
 			evt.Host = m.localID
@@ -125,7 +151,7 @@ func (m *Manager) Run() {
 
 			m.broadcast(evt)
 
-		case <-statsTimer.C:
+		case <-statsC:
 			m.updateLocalStats()
 
 		case <-pruneTimer.C:
@@ -210,7 +236,7 @@ func (m *Manager) GetHosts() []HostInfo {
 			ID: h.ID, Name: h.Name, Version: h.Version,
 			RuntimeProtocol: RuntimeProtocolMax, Generation: h.Generation,
 			Capabilities: h.Capabilities, AgentInstance: h.AgentInstance,
-			Local: h.ID == m.localID, Online: h.Connected, Sessions: h.Sessions,
+			Local: m.hasLocal && h.ID == m.localID, Online: h.Connected, Sessions: h.Sessions,
 			Activity: h.Activity, Stats: h.Stats, LastSeen: h.LastSeen,
 		})
 	}
@@ -232,7 +258,7 @@ func (m *Manager) StateHostSnapshots() []state.HostSnapshot {
 		}
 		hosts = append(hosts, state.HostSnapshot{
 			ID: host.ID, DisplayName: host.Name, Online: host.Connected,
-			Local: host.ID == m.localID, Version: host.Version, Sessions: sessions,
+			Local: m.hasLocal && host.ID == m.localID, Version: host.Version, Sessions: sessions,
 		})
 	}
 	return hosts
@@ -519,7 +545,7 @@ func (m *Manager) GetAllActivity() []*activity.Snapshot {
 
 	var all []*activity.Snapshot
 	for id, h := range m.hosts {
-		if id == m.localID {
+		if m.hasLocal && id == m.localID {
 			continue
 		}
 		all = append(all, h.Activity...)
@@ -547,11 +573,11 @@ func (m *Manager) HasHost(id string) bool {
 
 // IsLocal returns true if the given host ID is this node
 func (m *Manager) IsLocal(hostID string) bool {
-	return hostID == m.localID
+	return m.hasLocal && hostID == m.localID
 }
 
 func (m *Manager) HasSession(hostID, session string) bool {
-	if hostID == m.localID && m.localMgr != nil {
+	if m.hasLocal && hostID == m.localID && m.localMgr != nil {
 		for _, candidate := range m.localMgr.GetSessions() {
 			if candidate.Name == session {
 				return true

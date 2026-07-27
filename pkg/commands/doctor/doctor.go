@@ -77,6 +77,12 @@ func fileModeCheck(name, path string, required os.FileMode) check {
 func runChecks() []check {
 	var checks []check
 	checks = append(checks, check{levelOK, "version", common.SUMMARY + " (" + common.COMMIT + ")"})
+	deployment := strings.ToLower(firstNonEmpty(os.Getenv("TMUXATLAS_DEPLOYMENT"), "native"))
+	role := strings.ToLower(os.Getenv("TMUXATLAS_ROLE"))
+	if deployment == "docker" && role == "" {
+		role = "hub"
+	}
+	checks = append(checks, check{levelOK, "runtime", fmt.Sprintf("role %s, deployment %s", firstNonEmpty(role, "auto"), deployment)})
 
 	if executable, err := os.Executable(); err != nil {
 		checks = append(checks, check{levelFail, "executable", err.Error()})
@@ -86,7 +92,10 @@ func runChecks() []check {
 		checks = append(checks, check{levelOK, "executable", resolved})
 	}
 
-	if tmuxPath, err := exec.LookPath("tmux"); err != nil {
+	requiresTmux := role != "hub" && deployment != "docker"
+	if !requiresTmux {
+		checks = append(checks, check{levelOK, "tmux", "not required by the remote-only Hub"})
+	} else if tmuxPath, err := exec.LookPath("tmux"); err != nil {
 		checks = append(checks, check{levelFail, "tmux", "tmux was not found in PATH"})
 	} else {
 		output, err := exec.Command(tmuxPath, "-V").CombinedOutput()
@@ -179,6 +188,10 @@ func runChecks() []check {
 	}
 
 	servicePath := ""
+	if deployment == "docker" {
+		checks = append(checks, check{levelOK, "service lifecycle", "managed by the container runtime"})
+		return checks
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		home, _ := os.UserHomeDir()

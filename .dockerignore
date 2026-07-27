@@ -1,0 +1,12 @@
+.git
+.github
+.codex
+.agents
+.goreleaser.yml
+dist
+web/node_modules
+web/test-results
+web/playwright-report
+openspec
+*.log
+.DS_Store

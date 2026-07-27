@@ -38,6 +38,18 @@ func TestConfigDirMigratesLegacyDataWithoutDeletingSource(t *testing.T) {
 	}
 }
 
+func TestConfigDirUsesXDGConfigHome(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	dir, err := ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(xdg, AppName); dir != want {
+		t.Fatalf("ConfigDir() = %q, want %q", dir, want)
+	}
+}
+
 func TestConfigDirDoesNotOverwriteNewData(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
