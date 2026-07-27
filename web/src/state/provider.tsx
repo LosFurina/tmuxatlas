@@ -16,6 +16,7 @@ import { StateConnectionController } from './connection'
 import {
   applicationStateReducer,
   initialApplicationState,
+  type ApplicationStateAction,
   type ApplicationState,
 } from './reducer'
 import { selectActivity, selectHosts, selectSessions, selectToolEvents } from './selectors'
@@ -34,16 +35,21 @@ const ApplicationStateContext = createContext<ApplicationStateContextValue | nul
 
 export function ApplicationStateProvider({ children }: PropsWithChildren) {
   const [state, dispatch] = useReducer(applicationStateReducer, initialApplicationState)
-  const stateRef = useRef(state)
+  const stateRef = useRef(initialApplicationState)
   const controllerRef = useRef<StateConnectionController | null>(null)
-  stateRef.current = state
+  const dispatchSynchronized = useCallback((action: ApplicationStateAction) => {
+    stateRef.current = applicationStateReducer(stateRef.current, action)
+    dispatch(action)
+  }, [])
 
   useEffect(() => {
     const controller = new StateConnectionController({
-      onStatus: (connection) => dispatch({ type: 'connection', state: connection }),
+      onStatus: (connection) => {
+        dispatchSynchronized({ type: 'connection', state: connection })
+      },
       onEnvelope: (envelope: StateEnvelope) => {
         if (envelope.type === 'snapshot') {
-          dispatch({ type: 'snapshot', envelope })
+          dispatchSynchronized({ type: 'snapshot', envelope })
           return
         }
         if (envelope.type === 'delta') {
@@ -52,15 +58,15 @@ export function ApplicationStateProvider({ children }: PropsWithChildren) {
             current.instanceId !== envelope.instance_id ||
             (envelope.revision > current.revision &&
               envelope.base_revision !== current.revision)
-          dispatch({ type: 'delta', envelope })
+          dispatchSynchronized({ type: 'delta', envelope })
           if (gap) queueMicrotask(() => controller.rehydrate('State revision gap detected.'))
           return
         }
         if (envelope.type === 'resync-required') {
-          dispatch({ type: 'resync-required', reason: envelope.reason })
+          dispatchSynchronized({ type: 'resync-required', reason: envelope.reason })
           return
         }
-        dispatch({ type: 'reload-required', reason: envelope.reason })
+        dispatchSynchronized({ type: 'reload-required', reason: envelope.reason })
       },
     })
     controllerRef.current = controller
@@ -69,7 +75,7 @@ export function ApplicationStateProvider({ children }: PropsWithChildren) {
       controllerRef.current = null
       controller.dispose()
     }
-  }, [])
+  }, [dispatchSynchronized])
 
   const sessions = useMemo(() => selectSessions(state), [state])
   const hosts = useMemo(() => selectHosts(state, sessions), [state, sessions])
