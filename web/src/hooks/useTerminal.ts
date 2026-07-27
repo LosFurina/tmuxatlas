@@ -317,6 +317,9 @@ export function useTerminal(
       }
     }
 
+    // Establish the best dimensions available before the socket URL captures
+    // cols/rows. Later scheduled fits still cover flex and font layout settling.
+    doFit()
     const animationFrame = window.requestAnimationFrame(doFit)
     layoutCleanupRef.current.push(() => window.cancelAnimationFrame(animationFrame))
     for (const delay of [100, 300]) {
@@ -420,6 +423,16 @@ export function useTerminal(
 
       socket.onopen = () => {
         if (!isCurrent()) {
+          socket.close()
+          return
+        }
+        // A deferred fit may have changed cols/rows while the socket was still
+        // CONNECTING. onResize intentionally cannot send during that state, so
+        // synchronize the latest dimensions once the transport becomes writable.
+        try {
+          socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+        } catch {
+          setPtyState('reconnecting')
           socket.close()
           return
         }

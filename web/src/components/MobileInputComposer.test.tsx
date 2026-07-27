@@ -62,4 +62,21 @@ describe('MobileInputComposer boundaries', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Socket closed.')
     expect(textarea).toHaveValue('keep this')
   })
+
+  it('does not clear text entered while an earlier draft is sending', async () => {
+    let resolveSend!: () => void
+    const onSend = vi.fn(() => new Promise<void>(resolve => {
+      resolveSend = resolve
+    }))
+    renderComposer(onSend)
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'first' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send command to host-a/work' }))
+    expect(onSend).toHaveBeenCalledWith('first')
+
+    fireEvent.change(textarea, { target: { value: 'typed while sending' } })
+    resolveSend()
+
+    await waitFor(() => expect(textarea).toHaveValue('typed while sending'))
+  })
 })

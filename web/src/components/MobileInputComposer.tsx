@@ -30,6 +30,7 @@ export function MobileInputComposer({
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
   const [feedback, setFeedback] = useState('')
+  const draftRef = useRef(initialDraft)
   const composingRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const byteLength = terminalCommandBodyByteLength(draft)
@@ -55,19 +56,24 @@ export function MobileInputComposer({
 
   const submit = async () => {
     if (sending || composingRef.current) return
+    const submittedDraft = draftRef.current
+    const submittedByteLength = terminalCommandBodyByteLength(submittedDraft)
     setFeedback('')
-    if (tooLarge) {
+    if (submittedByteLength > MAX_TERMINAL_COMMAND_BODY_BYTES) {
       setError(
-        `Draft is ${byteLength.toLocaleString()} UTF-8 bytes; the maximum is ${MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()}.`,
+        `Draft is ${submittedByteLength.toLocaleString()} UTF-8 bytes; the maximum is ${MAX_TERMINAL_COMMAND_BODY_BYTES.toLocaleString()}.`,
       )
       return
     }
     setError('')
     setSending(true)
     try {
-      await onSend(draft)
-      setDraft('')
-      onDraftChange(targetKey, '')
+      await onSend(submittedDraft)
+      if (draftRef.current === submittedDraft) {
+        draftRef.current = ''
+        setDraft('')
+        onDraftChange(targetKey, '')
+      }
       setFeedback(`Sent to ${targetLabel}.`)
       window.requestAnimationFrame(() => textareaRef.current?.focus())
     } catch (sendError) {
@@ -123,6 +129,7 @@ export function MobileInputComposer({
               spellCheck={false}
               onChange={event => {
                 const nextDraft = event.target.value
+                draftRef.current = nextDraft
                 setDraft(nextDraft)
                 onDraftChange(targetKey, nextDraft)
                 setError('')

@@ -221,6 +221,24 @@ beforeEach(() => {
 })
 
 describe('useTerminal lifecycle and guarded input', () => {
+  it('synchronizes a deferred fit when the socket becomes writable', () => {
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    act(() => result.current.connect(terminalContainer()))
+
+    // Simulate a fit that completed after the WebSocket URL was constructed,
+    // while onResize could not yet write to the CONNECTING socket.
+    xtermState.terminals[0].cols = 164
+    xtermState.terminals[0].rows = 52
+    act(() => FakeWebSocket.sockets[0].open())
+
+    expect(FakeWebSocket.sockets[0].send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'resize',
+      cols: 164,
+      rows: 52,
+    }))
+    expect(result.current.ptyState).toBe('connected')
+  })
+
   it('keeps one xterm and one visibility listener across 100 socket reconnects', () => {
     const addDocument = vi.spyOn(document, 'addEventListener')
     const removeDocument = vi.spyOn(document, 'removeEventListener')
@@ -319,7 +337,8 @@ describe('useTerminal lifecycle and guarded input', () => {
       FakeWebSocket.sockets[1].open()
     })
     expect(() => result.current.sendRawInput(new Uint8Array([1]), stale)).toThrow(/target changed/i)
-    expect(FakeWebSocket.sockets[1].send).not.toHaveBeenCalled()
+    expect(FakeWebSocket.sockets[1].send.mock.calls
+      .filter(([frame]) => typeof frame !== 'string')).toHaveLength(0)
 
     FakeWebSocket.sockets[1].send.mockImplementationOnce(() => {
       throw new Error('send failed')
@@ -357,8 +376,11 @@ describe('useTerminal lifecycle and guarded input', () => {
     })
     expect(writeText).toHaveBeenCalledWith('selected only')
     expect(pasteResult!).toBeNull()
-    expect(FakeWebSocket.sockets[0].send).toHaveBeenCalledTimes(1)
-    const frame = FakeWebSocket.sockets[0].send.mock.calls[0][0] as Uint8Array
+    const inputFrames = FakeWebSocket.sockets[0].send.mock.calls
+      .map(([frame]) => frame)
+      .filter(frame => typeof frame !== 'string')
+    expect(inputFrames).toHaveLength(1)
+    const frame = inputFrames[0] as Uint8Array
     expect(new TextDecoder().decode(frame)).toBe('paste exactly')
   })
 
@@ -382,8 +404,10 @@ describe('useTerminal lifecycle and guarded input', () => {
       resolveRead('must not leak')
     })
     await rejection
-    expect(FakeWebSocket.sockets[0].send).not.toHaveBeenCalled()
-    expect(FakeWebSocket.sockets[1].send).not.toHaveBeenCalled()
+    expect(FakeWebSocket.sockets[0].send.mock.calls
+      .filter(([frame]) => typeof frame !== 'string')).toHaveLength(0)
+    expect(FakeWebSocket.sockets[1].send.mock.calls
+      .filter(([frame]) => typeof frame !== 'string')).toHaveLength(0)
   })
 
   it('latches scrollback while output arrives and resumes at the bottom', () => {
