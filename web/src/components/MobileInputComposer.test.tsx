@@ -79,4 +79,18 @@ describe('MobileInputComposer boundaries', () => {
 
     await waitFor(() => expect(textarea).toHaveValue('typed while sending'))
   })
+
+  it('flushes the current native value when navigation blurs the composer', () => {
+    const { onDraftChange } = renderComposer()
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'draft before navigation' } })
+    onDraftChange.mockClear()
+
+    fireEvent.blur(textarea)
+
+    expect(onDraftChange).toHaveBeenCalledWith(
+      '["host-a","work"]',
+      'draft before navigation',
+    )
+  })
 })

@@ -135,6 +135,11 @@ export function MobileInputComposer({
                 setError('')
                 setFeedback('')
               }}
+              onBlur={event => {
+                const nextDraft = event.currentTarget.value
+                draftRef.current = nextDraft
+                onDraftChange(targetKey, nextDraft)
+              }}
               onKeyDown={onKeyDown}
               onCompositionStart={startComposition}
               onCompositionEnd={endComposition}

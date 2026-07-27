@@ -162,6 +162,30 @@ describe('Terminal workspace controls', () => {
     expect(screen.getByRole('textbox', { name: /host-a\/work/ })).toHaveValue('draft for A')
   })
 
+  it('preserves Composer drafts when the Terminal workspace remounts', () => {
+    const drafts = new Map<string, string>()
+    const terminalDrafts = {
+      getDraft: (targetKey: string) => drafts.get(targetKey) ?? '',
+      setDraft: (targetKey: string, value: string) => {
+        if (value) drafts.set(targetKey, value)
+        else drafts.delete(targetKey)
+      },
+      clearDraft: (targetKey: string) => drafts.delete(targetKey),
+    }
+    const firstView = render(
+      <Terminal sessionName="work" hostId="host-a" terminalDrafts={terminalDrafts} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Mobile Input Composer' }))
+    fireEvent.change(screen.getByRole('textbox', { name: /host-a\/work/ }), {
+      target: { value: 'survives remount' },
+    })
+    firstView.unmount()
+
+    render(<Terminal sessionName="work" hostId="host-a" terminalDrafts={terminalDrafts} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Mobile Input Composer' }))
+    expect(screen.getByRole('textbox', { name: /host-a\/work/ })).toHaveValue('survives remount')
+  })
+
   it('sends the complete Composer value and only clears after success', async () => {
     render(<Terminal sessionName="work" hostId="host-a" />)
     fireEvent.click(screen.getByRole('button', { name: 'Expand Mobile Input Composer' }))

@@ -3,7 +3,10 @@ import {
   useTerminal,
   type PendingTerminalPaste,
 } from '../hooks/useTerminal'
-import { useTerminalDrafts } from '../hooks/useTerminalDrafts'
+import {
+  useTerminalDrafts,
+  type TerminalDraftStore,
+} from '../hooks/useTerminalDrafts'
 import {
   MobileTerminalInput,
   terminalKeys,
@@ -48,6 +51,7 @@ export interface TerminalProps {
   onToggleZen?: () => void
   onRetry?: () => void
   onCommandActionsChange?: (actions: TerminalCommandActions | null) => void
+  terminalDrafts?: TerminalDraftStore
 }
 
 const terminalStateMessages: Record<TerminalWorkspaceConnectionState, string> = {
@@ -79,6 +83,7 @@ export function Terminal({
   onToggleZen,
   onRetry,
   onCommandActionsChange,
+  terminalDrafts,
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<MobileTerminalInput | null>(null)
@@ -86,7 +91,8 @@ export function Terminal({
   const input = inputRef.current
   const targetKey = terminalTargetKey(hostId, sessionName)
   const targetLabel = `${hostName || hostId}/${sessionName}`
-  const { getDraft, setDraft } = useTerminalDrafts()
+  const localTerminalDrafts = useTerminalDrafts()
+  const { getDraft, setDraft } = terminalDrafts ?? localTerminalDrafts
   const [modifiers, setModifiers] = useState<ModifierState>(input.snapshot())
   const [toolbarOpen, setToolbarOpen] = useState(true)
   const [toolbarError, setToolbarError] = useState('')

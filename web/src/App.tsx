@@ -10,6 +10,7 @@ import {
   WorkspaceLoadingState,
 } from './components/PageStates'
 import type { TerminalCommandActions } from './components/Terminal'
+import { useTerminalDrafts } from './hooks/useTerminalDrafts'
 import { type Session, sessionKey, parseSessionKey } from './hooks/useSessions'
 import type { ToolEvent } from './hooks/useToolEvents'
 import { useNotifications } from './hooks/useNotifications'
@@ -106,6 +107,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   const defaultViewAppliedRef = useRef(false)
   const { prefs, loaded: preferencesLoaded } = usePreferences()
   const workspacePreferences = useWorkspacePreferences()
+  const terminalDrafts = useTerminalDrafts()
   const workspace = useMemo(() => buildWorkspaceViewModel(sessions, allToolEvents, activity, hosts), [sessions, allToolEvents, activity, hosts])
 
   useEffect(() => {
@@ -597,6 +599,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
                   onToggleZen={toggleZen}
                   onRetry={retryTerminal}
                   onCommandActionsChange={handleTerminalCommandActionsChange}
+                  terminalDrafts={terminalDrafts}
                 />
               </div>
             ) : applicationState.connection === 'ready' && sessions.length === 0 ? (

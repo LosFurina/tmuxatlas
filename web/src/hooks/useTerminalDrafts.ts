@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef } from 'react'
 
+export interface TerminalDraftStore {
+  getDraft: (targetKey: string) => string
+  setDraft: (targetKey: string, value: string) => void
+  clearDraft: (targetKey: string) => void
+}
+
 /**
- * Page-memory-only drafts. The Map belongs to one mounted Terminal workspace,
- * is keyed by the canonical target and is deliberately never persisted.
+ * Page-memory-only drafts. The caller controls the store lifetime; App owns the
+ * workspace store so a transient Terminal remount cannot discard drafts.
  */
-export function useTerminalDrafts() {
+export function useTerminalDrafts(): TerminalDraftStore {
   const draftsRef = useRef(new Map<string, string>())
 
   useEffect(() => () => {
