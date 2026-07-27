@@ -1,29 +1,39 @@
-import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
+import { lazy, Suspense, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Sidebar } from './components/Sidebar'
-import { Overview } from './components/Overview'
-import { QuickSwitcher } from './components/QuickSwitcher'
-import { NewSessionModal } from './components/NewSessionModal'
 import { TopBar } from './components/TopBar'
 import { StatusBar } from './components/StatusBar'
-import { Settings } from './components/Settings'
-import { HelpModal } from './components/HelpModal'
 import { Login } from './components/Login'
-import { Setup } from './components/Setup'
 import { StateConnectionNotice } from './components/StateConnectionNotice'
+import {
+  AuthLoadingState,
+  EmptyWorkspaceState,
+  WorkspaceLoadingState,
+} from './components/PageStates'
+import type { TerminalCommandActions } from './components/Terminal'
 import { type Session, sessionKey, parseSessionKey } from './hooks/useSessions'
 import type { ToolEvent } from './hooks/useToolEvents'
 import { useNotifications } from './hooks/useNotifications'
 import { usePushNotifications } from './hooks/usePushNotifications'
 import { usePWAInstall, type PWAInstallState } from './hooks/usePWAInstall'
 import { usePreferencesProvider, usePreferences, PreferencesContext } from './hooks/usePreferences'
+import { useVisualViewportVariables } from './hooks/useVisualViewport'
 import { useAuth } from './hooks/useAuth'
 import { applyTheme } from './theme'
 import { getBrandStorage, setBrandStorage } from './lib/brandStorage'
 import { postRuntimeMutation } from './lib/runtimeApi'
 import { ApplicationStateProvider, useApplicationState } from './state/provider'
+import { createCommandRegistry, dispatchCommandShortcut, type CommandHandler, type CommandId, type CommandScope } from './commands/registry'
+import { buildWorkspaceViewModel } from './workspace/model'
+import { useWorkspacePreferences } from './workspace/preferences'
 
 type View = 'overview' | 'session' | 'settings' | 'setup'
 
+const HelpModal = lazy(() => import('./components/HelpModal').then(module => ({ default: module.HelpModal })))
+const NewSessionModal = lazy(() => import('./components/NewSessionModal').then(module => ({ default: module.NewSessionModal })))
+const Overview = lazy(() => import('./components/Overview').then(module => ({ default: module.Overview })))
+const QuickSwitcher = lazy(() => import('./components/QuickSwitcher').then(module => ({ default: module.QuickSwitcher })))
+const Settings = lazy(() => import('./components/Settings').then(module => ({ default: module.Settings })))
+const Setup = lazy(() => import('./components/Setup').then(module => ({ default: module.Setup })))
 const Terminal = lazy(() => import('./components/Terminal').then(module => ({ default: module.Terminal })))
 
 function getViewFromPath(): { view: View; sessionKey: string | null } {
@@ -78,22 +88,25 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   const { processToolEvent } = useNotifications(pushState === 'subscribed')
   const [currentView, setCurrentView] = useState<View>(() => getViewFromPath().view)
   const [selectedSession, setSelectedSession] = useState<string | null>(() => getViewFromPath().sessionKey)
-  const hasMultipleHosts = hosts.length > 1
   const [serverVersion, setServerVersion] = useState<string | null>(null)
   const loadedVersionRef = useRef<string | null>(null)
   const updateAvailable = loadedVersionRef.current !== null && serverVersion !== null && serverVersion !== loadedVersionRef.current
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false)
   const [newSessionModalOpen, setNewSessionModalOpen] = useState(false)
   const terminalContainerRef = useRef<HTMLDivElement>(null)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return getBrandStorage('sidebar-collapsed') === 'true' } catch { return false }
-  })
+  const terminalActionsRef = useRef<TerminalCommandActions | null>(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [terminalFullscreen, setTerminalFullscreen] = useState(false)
+  const [zenMode, setZenMode] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const pendingSessionRef = useRef<string | null>(null)
-  const { prefs } = usePreferences()
+  const sidebarDefaultAppliedRef = useRef(false)
+  const defaultViewAppliedRef = useRef(false)
+  const { prefs, loaded: preferencesLoaded } = usePreferences()
+  const workspacePreferences = useWorkspacePreferences()
+  const workspace = useMemo(() => buildWorkspaceViewModel(sessions, allToolEvents, activity, hosts), [sessions, allToolEvents, activity, hosts])
 
   useEffect(() => {
     const metadata = applicationState.projection.metadata?.server as
@@ -166,10 +179,14 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     }
   }, [onLogout, prefs.lock_timeout_minutes, prefs.lock_background_faster, prefs.lock_background_minutes])
 
-  // Persist sidebar state
+  // Server-backed Preferences are the source of truth for the initial shell.
+  // Toggling the Sidebar remains a per-page action; Settings changes the
+  // default used by the next page load.
   useEffect(() => {
-    setBrandStorage('sidebar-collapsed', String(sidebarCollapsed))
-  }, [sidebarCollapsed])
+    if (!preferencesLoaded || sidebarDefaultAppliedRef.current) return
+    sidebarDefaultAppliedRef.current = true
+    setSidebarCollapsed(Boolean(prefs.sidebar.default_collapsed))
+  }, [preferencesLoaded, prefs.sidebar.default_collapsed])
 
   // Sync URL -> state on popstate (back/forward)
   useEffect(() => {
@@ -203,89 +220,34 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     setCurrentView(view || (sessKey ? 'session' : 'overview'))
   }, [])
 
-  // Global keyboard shortcuts
   useEffect(() => {
-    const shortcut = prefs.quick_switcher_shortcut || 'ctrl+k'
-    const onKeyDown = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey
-
-      // Quick switcher
-      if (mod) {
-        let match = false
-        if (shortcut === 'ctrl+k' && e.key === 'k') match = true
-        if (shortcut === 'ctrl+p' && e.key === 'p') match = true
-        if (shortcut === 'ctrl+space' && e.key === ' ') match = true
-        if (match) {
-          e.preventDefault()
-          setQuickSwitcherOpen(prev => !prev)
-          return
-        }
-      }
-
-      // Help: Cmd/Ctrl + ? or Cmd/Ctrl + / (Linux Ctrl+Shift+/ often doesn't produce '?')
-      if (mod && (e.key === '?' || e.key === '/' || (e.shiftKey && e.code === 'Slash'))) {
-        e.preventDefault()
-        setHelpOpen(prev => !prev)
-        return
-      }
-
-      // Overview: Cmd/Ctrl + H
-      if (mod && e.key === 'h' && !e.shiftKey) {
-        e.preventDefault()
-        navigateTo(null)
-        return
-      }
-
-      // Toggle sidebar: Cmd/Ctrl + \
-      if (mod && e.key === '\\') {
-        e.preventDefault()
-        setSidebarCollapsed(c => !c)
-        return
-      }
-
-      // Settings: Cmd/Ctrl + ,
-      if (mod && e.key === ',') {
-        e.preventDefault()
-        navigateTo(null, 'settings')
-        return
-      }
-
-      // Lock / Sign out: Cmd/Ctrl + L
-      if (mod && e.key === 'l' && !e.shiftKey && onLogout) {
-        e.preventDefault()
-        onLogout()
-        return
-      }
-
-      // Jump to next alert: Cmd/Ctrl + J
-      if (mod && e.key === 'j' && !e.shiftKey) {
-        e.preventDefault()
-        const pending = allToolEvents.filter(ev => ev.status === 'waiting' || ev.status === 'error')
-        if (pending.length === 0) return
-        const currentIdx = selectedSession
-          ? pending.findIndex(ev => (ev.host ? `${ev.host}/${ev.session}` : ev.session) === selectedSession)
-          : -1
-        const next = pending[(currentIdx + 1) % pending.length]
-        const sessKey = next.host ? `${next.host}/${next.session}` : next.session
-        navigateTo(sessKey, 'session')
-        if (next.window !== undefined) {
-          const { host, name } = parseSessionKey(sessKey)
-          postRuntimeMutation('/api/session/select-window', {
-            host_id: host, session: name, window: next.window, pane: next.pane || undefined,
-          }).catch(err => setRuntimeError(err instanceof Error ? err.message : 'The session action failed.'))
-        }
-        return
-      }
+    if (
+      defaultViewAppliedRef.current
+      || !preferencesLoaded
+      || applicationState.connection !== 'ready'
+    ) {
+      return
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [prefs.quick_switcher_shortcut, navigateTo, onLogout, allToolEvents, selectedSession])
+    defaultViewAppliedRef.current = true
+    if (window.location.pathname !== '/' || prefs.default_view !== 'last-session') return
 
-  const connected = applicationState.connection === 'ready'
-    ? true
-    : applicationState.connection === 'connecting'
-      ? null
-      : false
+    const target = workspacePreferences.recent.find(candidate => workspace.byTarget.has(candidate))
+    if (!target) return
+    const { host, name } = parseSessionKey(target)
+    window.history.replaceState(
+      null,
+      '',
+      `/session/${encodeURIComponent(host)}/${encodeURIComponent(name)}`,
+    )
+    setSelectedSession(target)
+    setCurrentView('session')
+  }, [
+    applicationState.connection,
+    preferencesLoaded,
+    prefs.default_view,
+    workspace.byTarget,
+    workspacePreferences.recent,
+  ])
 
   // If selected session was removed, go back to overview
   // (don't bounce if we're waiting for a newly created session to appear)
@@ -301,7 +263,9 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
 
   const handleSessionSelect = (session: Session) => {
     setMobileSidebarOpen(false)
-    navigateTo(sessionKey(session))
+    const target = sessionKey(session)
+    workspacePreferences.recordRecent(target)
+    navigateTo(target)
   }
 
   const refocusTerminal = useCallback(() => {
@@ -338,6 +302,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
 
   const handleQuickSwitch = useCallback(async (sessKey: string, windowIndex?: number) => {
     setQuickSwitcherOpen(false)
+    workspacePreferences.recordRecent(sessKey)
     navigateTo(sessKey)
     if (windowIndex !== undefined) {
       const { host, name } = parseSessionKey(sessKey)
@@ -352,7 +317,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     }
     // Refocus after navigation and window switch settle
     setTimeout(() => refocusTerminal(), 200)
-  }, [navigateTo, refocusTerminal])
+  }, [navigateTo, refocusTerminal, workspacePreferences])
 
   const openNewSessionModal = useCallback(() => {
     setQuickSwitcherOpen(false)
@@ -366,6 +331,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
         host_id: hostId, session: name,
       })
       const sessKey = `${hostId}/${name}`
+      workspacePreferences.recordRecent(sessKey)
       pendingSessionRef.current = sessKey
       navigateTo(sessKey)
       await refresh()
@@ -378,11 +344,96 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
       setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
       pendingSessionRef.current = null
     }
-  }, [navigateTo, refresh, refocusTerminal])
+  }, [navigateTo, refresh, refocusTerminal, workspacePreferences])
 
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
+    setTimeout(() => refocusTerminal(), 0)
+  }, [refocusTerminal])
+
+  const toggleZen = useCallback(() => {
+    setZenMode(value => !value)
+    setTimeout(() => refocusTerminal(), 0)
+  }, [refocusTerminal])
+
+  const goToNextAlert = useCallback(() => {
+    const pending = allToolEvents.filter(event => event.status === 'waiting' || event.status === 'error')
+    if (pending.length === 0) return
+    const currentIndex = selectedSession
+      ? pending.findIndex(event => `${event.host}/${event.session}` === selectedSession)
+      : -1
+    const next = pending[(currentIndex + 1) % pending.length]
+    const target = `${next.host}/${next.session}`
+    workspacePreferences.recordRecent(target)
+    void jumpToSession(target, next.window, next.pane)
+  }, [allToolEvents, jumpToSession, selectedSession, workspacePreferences])
+
+  const showingTerminal = currentView === 'session' && !!selectedSession
+  const activeSession = selectedSession
+    ? sessions.find(session => sessionKey(session) === selectedSession) ?? null
+    : null
+  const activeHost = activeSession
+    ? hosts.find(host => host.id === activeSession.host) ?? null
+    : null
+  const activeWindow = activeSession?.windows.find(window => window.active)
+  const activePane = activeWindow?.panes.find(pane => pane.active)
+  const activeToolEvent = selectedSession
+    ? getSessionEvents(selectedSession).find(event => event.status === 'waiting' || event.status === 'error')
+      ?? getSessionEvents(selectedSession)[0]
+    : undefined
+  const retryTerminal = useCallback(() => {
+    rehydrate()
+    terminalActionsRef.current?.reconnect()
+  }, [rehydrate])
+  const handleTerminalCommandActionsChange = useCallback((actions: TerminalCommandActions | null) => {
+    terminalActionsRef.current = actions
   }, [])
+
+  const commandHandlers = useMemo<Partial<Record<CommandId, CommandHandler>>>(() => ({
+    'palette.open': () => setQuickSwitcherOpen(value => !value),
+    'help.open': () => {
+      setQuickSwitcherOpen(false)
+      setHelpOpen(value => !value)
+    },
+    'navigation.overview': () => navigateTo(null),
+    'navigation.settings': navigateToSettings,
+    'session.new': openNewSessionModal,
+    'connection.reconnect': () => terminalActionsRef.current?.reconnect(),
+    'terminal.fullscreen': toggleFullscreen,
+    'terminal.zen': toggleZen,
+    'workspace.sidebar.toggle': () => setSidebarCollapsed(value => !value),
+    'attention.next': goToNextAlert,
+    ...(onLogout ? { 'account.sign-out': onLogout } : {}),
+  }), [goToNextAlert, navigateTo, navigateToSettings, onLogout, openNewSessionModal, toggleFullscreen, toggleZen])
+
+  const commands = useMemo(() => createCommandRegistry({
+    environment: {
+      hasTerminalTarget: showingTerminal,
+      canReconnect: showingTerminal,
+      canSignOut: Boolean(onLogout),
+      hasAttention: allToolEvents.some(event => event.status === 'waiting' || event.status === 'error'),
+    },
+    handlers: commandHandlers,
+    quickSwitcherShortcut: prefs.quick_switcher_shortcut,
+  }), [allToolEvents, commandHandlers, onLogout, prefs.quick_switcher_shortcut, showingTerminal])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const overlayOpen = quickSwitcherOpen || helpOpen || newSessionModalOpen || mobileSidebarOpen
+      let scope: CommandScope = overlayOpen ? 'overlay' : 'workspace'
+      if (!overlayOpen && showingTerminal && terminalContainerRef.current?.contains(document.activeElement)) scope = 'terminal'
+      dispatchCommandShortcut(event, commands, scope)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [commands, helpOpen, mobileSidebarOpen, newSessionModalOpen, quickSwitcherOpen, showingTerminal])
+
+  const detachBrowserSession = useCallback((target: string) => {
+    // This intentionally changes only browser navigation. It never calls a
+    // tmux lifecycle mutation, so the underlying Session keeps running.
+    if (selectedSession === target) navigateTo(null)
+    setMobileSidebarOpen(false)
+  }, [navigateTo, selectedSession])
 
   // Dynamic document title
   useEffect(() => {
@@ -406,18 +457,37 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
   useEffect(() => {
     if (currentView !== 'session') {
       setTerminalFullscreen(false)
+      setZenMode(false)
     }
   }, [currentView])
 
-  const showingTerminal = currentView === 'session' && !!selectedSession
+  if (
+    applicationState.instanceId === null
+    && (applicationState.connection === 'connecting' || applicationState.connection === 'rehydrating')
+  ) {
+    return (
+      <>
+        <StateConnectionNotice state={applicationState.connection} onAuthRequired={onLogout} />
+        <WorkspaceLoadingState />
+      </>
+    )
+  }
 
   return (
-    <div className="flex flex-col h-dvh w-screen bg-background text-foreground relative">
-      <StateConnectionNotice
-        state={applicationState.connection}
-        onAuthRequired={onLogout}
-      />
-      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+    <div className="app-shell flex flex-col bg-background text-foreground">
+      {(!zenMode
+        || applicationState.connection === 'auth-required'
+        || applicationState.connection === 'reload-required') && (
+        <StateConnectionNotice
+          state={applicationState.connection}
+          onAuthRequired={onLogout}
+        />
+      )}
+      {helpOpen && (
+        <Suspense fallback={null}>
+          <HelpModal commands={commands} onClose={() => setHelpOpen(false)} />
+        </Suspense>
+      )}
       {runtimeError && (
         <button
           type="button"
@@ -428,36 +498,39 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
         </button>
       )}
       {quickSwitcherOpen && (
-        <QuickSwitcher
-          sessions={sessions}
-          waitingEvents={allToolEvents.filter(e => e.status === 'waiting')}
-          onSelect={handleQuickSwitch}
-          onOverview={() => { closeQuickSwitcher(); navigateTo(null) }}
-          onCreateSession={openNewSessionModal}
-          onClose={closeQuickSwitcher}
-        />
+        <Suspense fallback={null}>
+          <QuickSwitcher
+            workspace={workspace}
+            commands={commands}
+            pinnedTargets={workspacePreferences.pinned}
+            recentTargets={workspacePreferences.recent}
+            onSelect={handleQuickSwitch}
+            onClose={closeQuickSwitcher}
+          />
+        </Suspense>
       )}
       {newSessionModalOpen && (
-        <NewSessionModal
-          hosts={hosts}
-          onCreateSession={handleCreateSession}
-          onClose={() => setNewSessionModalOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <NewSessionModal
+            hosts={hosts}
+            onCreateSession={handleCreateSession}
+            onClose={() => setNewSessionModalOpen(false)}
+          />
+        </Suspense>
       )}
       {/* TopBar - full width */}
-      {(!terminalFullscreen || !prefs.fullscreen_hide_alerts) && (
+      {!zenMode && (!terminalFullscreen || !prefs.fullscreen_hide_alerts) && (
         <TopBar
           currentView={currentView}
           sidebarCollapsed={sidebarCollapsed}
           onToggleCollapse={() => {
-            if (window.matchMedia('(max-width: 767px)').matches) setMobileSidebarOpen(open => !open)
+            if (window.matchMedia('(max-width: 1023px)').matches) setMobileSidebarOpen(open => !open)
             else setSidebarCollapsed(c => !c)
           }}
           onOverview={() => navigateTo(null)}
           onSettings={navigateToSettings}
           onNewSession={openNewSessionModal}
           events={allToolEvents}
-          connected={connected}
           onJumpToSession={jumpToSession}
           onDismiss={dismissEvent}
           onDismissAll={dismissAllEvents}
@@ -465,15 +538,19 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
       )}
       {/* Middle: Sidebar + Content */}
       <div className="flex-1 flex overflow-hidden">
-        {!terminalFullscreen && (
+        {!terminalFullscreen && !zenMode && (
           <Sidebar
-            sessions={sessions}
+            workspace={workspace}
             selectedSession={selectedSession}
             collapsed={sidebarCollapsed}
             collapseMode={(prefs.sidebar.collapse_mode || 'small') as 'small' | 'hidden'}
-            hasMultipleHosts={hasMultipleHosts}
+            pinnedTargets={workspacePreferences.pinned}
+            recentTargets={workspacePreferences.recent}
+            onTogglePin={workspacePreferences.togglePin}
             onSessionSelect={handleSessionSelect}
+            onDetachSession={detachBrowserSession}
             onSessionRenamed={(oldKey, newKey) => {
+              workspacePreferences.replaceTarget(oldKey, newKey)
               if (selectedSession === oldKey) {
                 pendingSessionRef.current = newKey
                 navigateTo(newKey)
@@ -486,54 +563,65 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
               }
             }}
             onRuntimeError={setRuntimeError}
-            getSessionEvents={getSessionEvents}
-            sessionNeedsAttention={sessionNeedsAttention}
-            getSessionActivity={getSessionActivity}
             mobileOpen={mobileSidebarOpen}
             onMobileClose={() => setMobileSidebarOpen(false)}
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {currentView === 'setup' ? (
-            <Setup onComplete={() => navigateTo(null)} />
-          ) : currentView === 'settings' ? (
-            <Settings
-              pushState={pushState}
-              onPushSubscribe={pushSubscribe}
-              onPushUnsubscribe={pushUnsubscribe}
-              onLogout={onLogout}
-              pwaInstall={pwaInstall}
-            />
-          ) : selectedSession ? (
-            <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
-              <Suspense fallback={<div className="flex-1 grid place-items-center font-mono text-muted-foreground">Loading terminal…</div>}>
+          <Suspense fallback={<div role="status" className="flex-1 grid place-items-center text-sm text-muted-foreground">Loading view…</div>}>
+            {currentView === 'setup' ? (
+              <Setup onComplete={() => navigateTo(null)} />
+            ) : currentView === 'settings' ? (
+              <Settings
+                pushState={pushState}
+                onPushSubscribe={pushSubscribe}
+                onPushUnsubscribe={pushUnsubscribe}
+                onLogout={onLogout}
+                pwaInstall={pwaInstall}
+              />
+            ) : selectedSession ? (
+              <div ref={terminalContainerRef} className="flex-1 flex flex-col overflow-hidden">
                 <Terminal
                   sessionName={parseSessionKey(selectedSession).name}
                   hostId={parseSessionKey(selectedSession).host}
+                  hostName={activeHost?.name || activeSession?.host_name}
+                  windowLabel={activeWindow ? `${activeWindow.index}:${activeWindow.name}` : undefined}
+                  paneLabel={activePane ? String(activePane.index) : undefined}
+                  toolStatus={activeToolEvent ? `${activeToolEvent.tool} · ${activeToolEvent.status}` : undefined}
+                  hubConnection={applicationState.connection}
+                  agentOnline={activeSession ? (activeHost?.online ?? activeSession.host_online !== false) : true}
+                  sessionAvailable={Boolean(activeSession)}
                   fullscreen={terminalFullscreen}
+                  zenMode={zenMode}
                   onToggleFullscreen={toggleFullscreen}
+                  onToggleZen={toggleZen}
+                  onRetry={retryTerminal}
+                  onCommandActionsChange={handleTerminalCommandActionsChange}
                 />
-              </Suspense>
-            </div>
-          ) : (
-            <Overview
-              sessions={sessions}
-              hosts={hosts}
-              onSessionSelect={handleSessionSelect}
-              getSessionEvents={getSessionEvents}
-              getSessionActivity={getSessionActivity}
-              pendingAlerts={allToolEvents.filter(e => e.status === 'waiting' || e.status === 'error')}
-              onJumpToSession={jumpToSession}
-              onDismissAlert={dismissEvent}
-            />
-          )}
+              </div>
+            ) : applicationState.connection === 'ready' && sessions.length === 0 ? (
+              <EmptyWorkspaceState
+                onNewSession={openNewSessionModal}
+                onOpenSetup={() => navigateTo(null, 'setup')}
+              />
+            ) : (
+              <Overview
+                sessions={sessions}
+                hosts={hosts}
+                onSessionSelect={handleSessionSelect}
+                getSessionEvents={getSessionEvents}
+                getSessionActivity={getSessionActivity}
+                pendingAlerts={allToolEvents.filter(e => e.status === 'waiting' || e.status === 'error')}
+                onJumpToSession={jumpToSession}
+                onDismissAlert={dismissEvent}
+              />
+            )}
+          </Suspense>
         </div>
       </div>
       {/* StatusBar - full width */}
-      <StatusBar
+      {!zenMode && <StatusBar
         sessionCount={sessions.length}
-        connected={connected}
-        activeSession={selectedSession ? sessions.find(s => sessionKey(s) === selectedSession) ?? null : null}
         waitingCount={allToolEvents.filter(e => e.status === 'waiting').length}
         pushState={pushState}
         version={serverVersion}
@@ -541,12 +629,13 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
         hosts={hosts}
         agentCount={allToolEvents.filter(e => e.auto_detected || e.status === 'waiting' || e.status === 'error').length}
         onHelp={() => setHelpOpen(true)}
-      />
+      />}
     </div>
   )
 }
 
 export default function App() {
+  useVisualViewportVariables()
   const prefsProvider = usePreferencesProvider()
   const pwaInstall = usePWAInstall()
   const {
@@ -585,7 +674,7 @@ export default function App() {
   }, [prefsProvider.loaded, prefsProvider.prefs.theme, prefsProvider.prefs.custom_theme])
 
   if (loading) {
-    return <div className="flex items-center justify-center h-dvh w-screen bg-background" />
+    return <AuthLoadingState />
   }
 
   if (authRequired && needsSetup) {
@@ -604,10 +693,12 @@ export default function App() {
   if (authenticated && showOnboarding) {
     return (
       <PreferencesContext.Provider value={prefsProvider}>
-        <Setup fullPage onComplete={() => {
-          setShowOnboarding(false)
-          try { setBrandStorage('setup-seen', 'true') } catch {}
-        }} />
+        <Suspense fallback={<WorkspaceLoadingState label="Loading setup" />}>
+          <Setup fullPage onComplete={() => {
+            setShowOnboarding(false)
+            try { setBrandStorage('setup-seen', 'true') } catch {}
+          }} />
+        </Suspense>
       </PreferencesContext.Provider>
     )
   }

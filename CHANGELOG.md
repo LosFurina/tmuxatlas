@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.0](https://github.com/LosFurina/tmuxatlas/compare/v0.8.0...v0.9.0) (2026-07-27)
+
+### Features
+
+* add a unified Command Palette for hosts, sessions, windows, agents, and application actions
+* add Terminal search, contextual clipboard actions, paste confirmation, and true Zen Mode
+* add a generation-safe mobile Input Composer with exact-text submission
+* improve responsive navigation, loading and error states, accessibility, and visual consistency
+* add browser, interaction, accessibility, and visual-regression coverage for the terminal workspace
+
 ## [0.8.0](https://github.com/LosFurina/tmuxatlas/compare/v0.7.0...v0.8.0) (2026-07-27)
 
 ### Features

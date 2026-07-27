@@ -1,249 +1,286 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { Session, sessionKey } from '../hooks/useSessions'
-import { ToolEvent } from '../hooks/useToolEvents'
-import { toolColors } from '../theme'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { RegisteredCommand } from '../commands/registry'
+import { formatShortcut } from '../commands/registry'
 import { cn } from '../lib/utils'
+import type { WorkspaceSession, WorkspaceViewModel } from '../workspace/model'
+import { isAttentionStatus, workspaceStatusLabel } from '../workspace/model'
+import { Dialog } from './ui'
 
 interface QuickSwitcherProps {
-  sessions: Session[]
-  waitingEvents: ToolEvent[]
-  onSelect: (sessionName: string, windowIndex?: number) => void
-  onOverview: () => void
-  onCreateSession: () => void
+  workspace: WorkspaceViewModel
+  commands: RegisteredCommand[]
+  pinnedTargets: string[]
+  recentTargets: string[]
+  onSelect: (target: string, windowIndex?: number) => void
   onClose: () => void
 }
 
-interface SwitcherItem {
-  type: 'waiting' | 'session' | 'window' | 'nav' | 'action'
+type PaletteGroup = 'Needs Attention' | 'Commands' | 'Pinned' | 'Recent' | 'Hosts' | 'Sessions' | 'Windows' | 'Agents'
+
+interface PaletteItem {
+  id: string
+  group: PaletteGroup
   label: string
   detail?: string
-  sessionName: string
+  keywords: string
+  disabled: boolean
+  target?: string
   windowIndex?: number
-  statusColor?: string
-  action?: string
+  command?: RegisteredCommand
 }
 
-function fuzzyMatch(query: string, text: string): boolean {
-  const lower = text.toLowerCase()
-  const q = query.toLowerCase()
-  let qi = 0
-  for (let i = 0; i < lower.length && qi < q.length; i++) {
-    if (lower[i] === q[qi]) qi++
+const groupOrder: PaletteGroup[] = ['Needs Attention', 'Commands', 'Pinned', 'Recent', 'Hosts', 'Sessions', 'Windows', 'Agents']
+
+function fuzzyScore(query: string, text: string): number | null {
+  const normalizedQuery = query.trim().toLowerCase()
+  const normalizedText = text.toLowerCase()
+  if (!normalizedQuery) return 0
+  const direct = normalizedText.indexOf(normalizedQuery)
+  if (direct >= 0) return direct
+  let queryIndex = 0
+  let score = 100
+  let previousMatch = -2
+  for (let index = 0; index < normalizedText.length && queryIndex < normalizedQuery.length; index++) {
+    if (normalizedText[index] !== normalizedQuery[queryIndex]) continue
+    score += index === previousMatch + 1 ? 0 : 3
+    score += index
+    previousMatch = index
+    queryIndex++
   }
-  return qi === q.length
+  return queryIndex === normalizedQuery.length ? score : null
 }
 
-export function QuickSwitcher({ sessions, waitingEvents, onSelect, onOverview, onCreateSession, onClose }: QuickSwitcherProps) {
+function sessionItem(session: WorkspaceSession, group: PaletteGroup): PaletteItem {
+  const agentDetail = session.agents.length > 0 ? ` · ${session.agents.join(', ')}` : ''
+  return {
+    id: `session:${session.key}`,
+    group,
+    label: session.name,
+    detail: `${session.hostName} · ${workspaceStatusLabel(session.status)}${agentDetail}`,
+    keywords: session.searchText,
+    disabled: false,
+    target: session.key,
+  }
+}
+
+export function QuickSwitcher({
+  workspace,
+  commands,
+  pinnedTargets,
+  recentTargets,
+  onSelect,
+  onClose,
+}: QuickSwitcherProps) {
   const [query, setQuery] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
-  const allItems = useMemo<SwitcherItem[]>(() => {
-    const items: SwitcherItem[] = []
-    const sorted = [...waitingEvents].sort((a, b) => {
-      const ta = new Date(a.timestamp).getTime()
-      const tb = new Date(b.timestamp).getTime()
-      return ta - tb
-    })
-    for (const evt of sorted) {
-      const evtKey = evt.host ? `${evt.host}/${evt.session}` : evt.session
+  const allItems = useMemo<PaletteItem[]>(() => {
+    const pinned = new Set(pinnedTargets)
+    const recent = new Set(recentTargets)
+    const items: PaletteItem[] = commands.filter(command => command.id !== 'palette.open').map(command => ({
+      id: `command:${command.id}`,
+      group: 'Commands',
+      label: command.label,
+      detail: command.enabled ? formatShortcut(command.shortcut) || command.category : 'Unavailable in this context',
+      keywords: `${command.id} ${command.label} ${command.category} ${command.shortcut || ''}`,
+      disabled: !command.enabled,
+      command,
+    }))
+
+    for (const host of workspace.hosts) {
       items.push({
-        type: 'waiting',
-        label: `${evt.session}`,
-        detail: `${evt.tool} — ${evt.message || 'waiting for input'}`,
-        sessionName: evtKey,
-        windowIndex: evt.window,
-        statusColor: toolColors[evt.tool] || 'var(--warning)',
+        id: `host:${host.id}`,
+        group: 'Hosts',
+        label: host.name,
+        detail: `${host.sessionCount} session${host.sessionCount === 1 ? '' : 's'} · ${workspaceStatusLabel(host.status)} · ${host.id}`,
+        keywords: `${host.name} ${host.id} ${host.status}`,
+        disabled: host.sessions.length === 0,
+        target: host.sessions[0]?.key,
       })
     }
-    // Navigation items
-    items.push({
-      type: 'nav',
-      label: 'Overview',
-      detail: 'Dashboard',
-      sessionName: '',
-    })
 
-    // New session action
-    items.push({
-      type: 'action',
-      label: 'New Session',
-      detail: 'Create & switch',
-      sessionName: '',
-      action: 'create',
-    })
+    for (const session of workspace.sessions) {
+      const group: PaletteGroup = isAttentionStatus(session.status)
+        ? 'Needs Attention'
+        : pinned.has(session.key)
+          ? 'Pinned'
+          : recent.has(session.key)
+            ? 'Recent'
+            : 'Sessions'
+      items.push(sessionItem(session, group))
 
-    const hasMultipleHosts = sessions.some(s => s.host)
-    for (const session of sessions) {
-      const sk = sessionKey(session)
-      const label = hasMultipleHosts && session.host_name ? `${session.host_name}: ${session.name}` : session.name
-      items.push({
-        type: 'session',
-        label,
-        detail: `${session.windows.length} window${session.windows.length !== 1 ? 's' : ''}`,
-        sessionName: sk,
-      })
-      if (session.windows.length > 1) {
-        for (const win of session.windows) {
-          items.push({
-            type: 'window',
-            label: `${label}/${win.name}`,
-            detail: `window ${win.index}`,
-            sessionName: sk,
-            windowIndex: win.index,
-          })
-        }
+      for (const window of session.source.windows) {
+        items.push({
+          id: `window:${session.key}:${window.index}`,
+          group: 'Windows',
+          label: `${session.name} / ${window.name}`,
+          detail: `${session.hostName} · Window ${window.index}${window.active ? ' · Active' : ''}`,
+          keywords: `${session.searchText} ${window.name} window ${window.index}`,
+          disabled: session.status === 'offline',
+          target: session.key,
+          windowIndex: window.index,
+        })
+      }
+
+      for (const agent of session.agents) {
+        items.push({
+          id: `agent:${session.key}:${agent}`,
+          group: 'Agents',
+          label: agent,
+          detail: `${session.hostName} / ${session.name} · ${workspaceStatusLabel(session.status)}`,
+          keywords: `${session.searchText} ${agent}`,
+          disabled: false,
+          target: session.key,
+        })
       }
     }
     return items
-  }, [sessions, waitingEvents])
+  }, [commands, pinnedTargets, recentTargets, workspace])
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return allItems
-    return allItems.filter(item => fuzzyMatch(query, item.label) || (item.detail && fuzzyMatch(query, item.detail)))
+    const scored = allItems.flatMap(item => {
+      const score = fuzzyScore(query, `${item.label} ${item.detail || ''} ${item.keywords}`)
+      return score === null ? [] : [{ item, score }]
+    })
+    return scored.sort((left, right) => (
+      left.score - right.score
+      || groupOrder.indexOf(left.item.group) - groupOrder.indexOf(right.item.group)
+      || Number(left.item.disabled) - Number(right.item.disabled)
+      || left.item.label.localeCompare(right.item.label)
+    )).map(value => value.item)
   }, [allItems, query])
 
-  useEffect(() => { setSelectedIndex(0) }, [filtered.length, query])
-  useEffect(() => {
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }, [])
-
-  // Capture Escape at the window level so it doesn't reach the terminal fullscreen handler
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [onClose])
+  const grouped = useMemo(() => groupOrder.flatMap(group => {
+    const items = filtered.filter(item => item.group === group)
+    return items.length > 0 ? [{ group, items }] : []
+  }), [filtered])
 
   useEffect(() => {
-    const list = listRef.current
-    if (!list) return
-    const el = list.children[selectedIndex] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
+    const firstEnabled = filtered.findIndex(item => !item.disabled)
+    setSelectedIndex(firstEnabled < 0 ? 0 : firstEnabled)
+  }, [query, filtered.length])
+
+  useEffect(() => {
+    const option = document.getElementById(`command-palette-option-${selectedIndex}`)
+    option?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  const selectItem = (item: SwitcherItem) => {
-    if (item.type === 'nav') {
-      onOverview()
-    } else if (item.type === 'action' && item.action === 'create') {
-      onCreateSession()
-    } else {
-      onSelect(item.sessionName, item.windowIndex)
+  const execute = (item: PaletteItem) => {
+    if (item.disabled) return
+    onClose()
+    if (item.command) {
+      void item.command.run({ source: 'palette' })
+      return
     }
+    if (item.target) onSelect(item.target, item.windowIndex)
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault()
-        setSelectedIndex(i => Math.min(i + 1, filtered.length - 1))
-        break
-      case 'ArrowUp':
-        e.preventDefault()
-        setSelectedIndex(i => Math.max(i - 1, 0))
-        break
-      case 'Enter':
-        e.preventDefault()
-        if (filtered[selectedIndex]) {
-          selectItem(filtered[selectedIndex])
-        }
-        break
-      case 'Escape':
-        e.preventDefault()
-        onClose()
-        break
-    }
+  const moveSelection = (direction: 1 | -1) => {
+    if (filtered.length === 0) return
+    setSelectedIndex(current => {
+      let next = current
+      for (let step = 0; step < filtered.length; step++) {
+        next = (next + direction + filtered.length) % filtered.length
+        if (!filtered[next].disabled) return next
+      }
+      return current
+    })
   }
 
-  const hasWaiting = filtered.some(i => i.type === 'waiting')
-  const hasSessions = filtered.some(i => i.type !== 'waiting')
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      moveSelection(1)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      moveSelection(-1)
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      const item = filtered[selectedIndex]
+      if (item) execute(item)
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
+    } else if (event.key === 'Tab') {
+      // The Palette has one tab stop; keep keyboard focus inside the modal.
+      event.preventDefault()
+      inputRef.current?.focus()
+    }
+  }
 
   return (
-    <div
-      data-quick-switcher
-      className="fixed inset-0 z-[9999] flex items-start justify-center pt-[20vh] bg-black/50"
-      onClick={onClose}
+    <Dialog
+      open
+      onOpenChange={open => { if (!open) onClose() }}
+      title="Command Palette"
+      description="Search commands and stable Workspace targets."
+      closeLabel="Close Command Palette"
+      initialFocusRef={inputRef}
+      className="command-palette-dialog"
     >
-      <div
-        className="w-[460px] max-h-[400px] bg-card border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="p-3 px-4 border-b border-border">
+      <div data-command-palette className="flex min-h-0 flex-1 flex-col">
+        <div className="border-b border-border p-3 sm:px-4">
           <input
             ref={inputRef}
+            role="combobox"
+            aria-label="Search commands, hosts, sessions, windows, and agents"
+            aria-autocomplete="list"
+            aria-expanded="true"
+            aria-controls="command-palette-results"
+            aria-activedescendant={filtered[selectedIndex] ? `command-palette-option-${selectedIndex}` : undefined}
             value={query}
-            onChange={e => setQuery(e.target.value)}
+            onChange={event => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={waitingEvents.length > 0 ? 'Waiting prompts first — press Enter...' : 'Go to session or window...'}
-            className="w-full text-[15px] text-foreground bg-transparent border-none outline-none font-mono placeholder:text-muted-foreground"
+            placeholder="Search commands, hosts, sessions, windows, or agents…"
+            className="h-11 w-full border-none bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto py-1">
-            {filtered.length === 0 && (
-              <div className="p-4 text-muted-foreground text-[13px] text-center">No matches</div>
-            )}
-            {filtered.map((item, i) => {
-              const prevItem = i > 0 ? filtered[i - 1] : null
-              const showSeparator = hasWaiting && hasSessions && item.type !== 'waiting' && prevItem?.type === 'waiting'
-
-              return (
-                <div key={`${item.type}-${item.label}-${item.windowIndex}-${item.action}`}>
-                  {showSeparator && <div className="h-px bg-border mx-4 my-1" />}
+        <div id="command-palette-results" ref={listRef} role="listbox" className="flex-1 overflow-y-auto overscroll-contain py-2">
+          {filtered.length === 0 && (
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground">No matching commands or targets</div>
+          )}
+          {grouped.map(({ group, items }) => (
+            <div key={group} role="group" aria-labelledby={`palette-group-${group.replace(/\s+/g, '-').toLowerCase()}`}>
+              <div id={`palette-group-${group.replace(/\s+/g, '-').toLowerCase()}`} className="px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {group}
+              </div>
+              {items.map(item => {
+                const index = filtered.indexOf(item)
+                return (
                   <div
-                    onClick={() => selectItem(item)}
-                    onMouseEnter={() => setSelectedIndex(i)}
+                    id={`command-palette-option-${index}`}
+                    key={item.id}
+                    role="option"
+                    aria-selected={index === selectedIndex}
+                    aria-disabled={item.disabled || undefined}
+                    onMouseDown={event => event.preventDefault()}
+                    onClick={() => execute(item)}
+                    onMouseEnter={() => { if (!item.disabled) setSelectedIndex(index) }}
                     className={cn(
-                      'py-2 px-4 cursor-pointer flex items-center gap-2 transition-colors',
-                      i === selectedIndex ? 'bg-primary/15' : 'hover:bg-primary/5',
+                      'mx-2 flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm',
+                      item.disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
+                      index === selectedIndex && !item.disabled ? 'bg-primary/15 text-foreground' : 'text-foreground hover:bg-muted/70',
                     )}
                   >
-                    {item.type === 'waiting' && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-warning shrink-0 animate-[pulse_1.5s_ease-in-out_infinite]" />
-                    )}
-                    {item.type === 'nav' && (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-primary">
-                        <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
-                      </svg>
-                    )}
-                    {item.type === 'action' && (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-accent">
-                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                      </svg>
-                    )}
-                    <span className={cn(
-                      'text-sm flex-1 overflow-hidden text-ellipsis whitespace-nowrap',
-                      item.type === 'window' ? 'text-muted-foreground font-normal pl-3' : 'text-foreground font-semibold',
-                    )}>
-                      {item.label}
-                    </span>
-                    {item.detail && (
-                      <span
-                        className="text-xs shrink-0"
-                        style={{
-                          color: item.type === 'waiting' ? (item.statusColor || 'var(--warning)') : 'var(--color-muted-foreground)',
-                        }}
-                      >
-                        {item.detail}
-                      </span>
-                    )}
+                    <span aria-hidden="true" className={cn(
+                      'h-2 w-2 shrink-0 rounded-full',
+                      item.group === 'Needs Attention' ? 'bg-warning' : item.command ? 'bg-primary' : 'bg-muted-foreground/60',
+                    )} />
+                    <span className="min-w-0 flex-1 truncate font-medium">{item.label}</span>
+                    {item.detail && <span className="max-w-[55%] truncate text-xs text-muted-foreground">{item.detail}</span>}
                   </div>
-                </div>
-              )
-            })}
-          </div>
-        <div className="py-1.5 px-4 border-t border-border text-[11px] text-muted-foreground flex gap-3">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
-          <span>esc close</span>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-4 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+          <span>↑↓ Navigate</span><span>↵ Run</span><span>Esc Close</span>
         </div>
       </div>
-    </div>
+    </Dialog>
   )
 }

@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  snapshotPathTemplate: '{testDir}/__snapshots__/{testFilePath}/{arg}{ext}',
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,
@@ -9,6 +10,12 @@ export default defineConfig({
     baseURL: 'http://localhost:17654',
     headless: true,
     trace: 'retain-on-failure',
+  },
+  expect: {
+    toHaveScreenshot: {
+      threshold: 0.25,
+      maxDiffPixelRatio: 0.025,
+    },
   },
   projects: [
     {

@@ -35,6 +35,15 @@ export class MobileTerminalInput {
     this.emit()
   }
 
+  consumeOneShot(): void {
+    if (this.state.ctrl !== 'once' && this.state.alt !== 'once') return
+    this.state = {
+      ctrl: this.state.ctrl === 'once' ? 'off' : this.state.ctrl,
+      alt: this.state.alt === 'once' ? 'off' : this.state.alt,
+    }
+    this.emit()
+  }
+
   encode(data: string): Uint8Array {
     let value = data
     if (this.state.ctrl !== 'off' && value.length === 1) {
@@ -42,14 +51,7 @@ export class MobileTerminalInput {
       if (code >= 64 && code <= 95) value = String.fromCharCode(code & 0x1f)
     }
     if (this.state.alt !== 'off') value = `\x1b${value}`
-    const consumed = this.state.ctrl === 'once' || this.state.alt === 'once'
-    if (consumed) {
-      this.state = {
-        ctrl: this.state.ctrl === 'once' ? 'off' : this.state.ctrl,
-        alt: this.state.alt === 'once' ? 'off' : this.state.alt,
-      }
-      this.emit()
-    }
+    this.consumeOneShot()
     return new TextEncoder().encode(value)
   }
 

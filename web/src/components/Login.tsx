@@ -23,7 +23,7 @@ export function Login({ mode, error, rpId, origin, onSubmit }: LoginProps) {
   }
 
   return (
-    <div className="flex items-center justify-center min-h-dvh w-screen bg-background font-mono text-sm font-bold">
+    <div className="app-shell flex items-center justify-center bg-background font-mono text-sm font-bold">
       <div className="w-full max-w-md p-8">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">TmuxAtlas</h1>

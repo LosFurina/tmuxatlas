@@ -12,6 +12,48 @@ export const statusConfig: Record<string, { color: string; label: string; icon?:
     completed: { color: 'var(--success)', label: 'Completed', icon: '✓', bg: 'color-mix(in oklch, var(--success) 8%, transparent)' },
 }
 
+/**
+ * Shared semantic aliases intentionally reference the existing preset tokens.
+ * This keeps custom themes backwards compatible while giving Workspace chrome
+ * one stable vocabulary instead of repeating brand colors in components.
+ */
+export const semanticThemeVars: Readonly<Record<string, string>> = {
+    '--surface-canvas': 'var(--background)',
+    '--surface-raised': 'var(--card)',
+    '--surface-overlay': 'var(--popover)',
+    '--surface-inset': 'var(--muted)',
+    '--surface-hover': 'color-mix(in oklch, var(--foreground) 6%, var(--card))',
+    '--surface-active': 'color-mix(in oklch, var(--primary) 12%, var(--card))',
+    '--text-primary': 'var(--foreground)',
+    '--text-secondary': 'var(--muted-foreground)',
+    '--text-on-accent': 'var(--primary-foreground)',
+    '--elevation-sm': '0 1px 2px color-mix(in oklch, var(--background) 48%, transparent)',
+    '--elevation-md': '0 8px 24px color-mix(in oklch, var(--background) 58%, transparent)',
+    '--elevation-lg': '0 18px 48px color-mix(in oklch, var(--background) 68%, transparent)',
+    '--focus-ring': 'var(--ring)',
+    '--focus-ring-width': '2px',
+    '--focus-ring-offset': '2px',
+    '--motion-fast': '120ms',
+    '--motion-normal': '180ms',
+    '--motion-slow': '240ms',
+    '--motion-ease': 'cubic-bezier(0.2, 0, 0, 1)',
+    '--control-height-sm': '2rem',
+    '--control-height-md': '2.5rem',
+    '--control-height-lg': '2.75rem',
+    '--control-target-min': '44px',
+    '--terminal-chrome': 'var(--card)',
+    '--terminal-chrome-foreground': 'var(--card-foreground)',
+    '--terminal-chrome-muted': 'var(--muted)',
+    '--terminal-chrome-border': 'var(--border)',
+    '--terminal-chrome-shadow': 'inset 0 0 20px color-mix(in oklch, var(--primary) 8%, transparent)',
+    '--status-info': 'var(--primary)',
+    '--status-running': 'var(--success)',
+    '--status-waiting': 'var(--warning)',
+    '--status-done': 'var(--success)',
+    '--status-error': 'var(--destructive)',
+    '--status-offline': 'var(--muted-foreground)',
+}
+
 export interface ThemePreset {
     name: string
     label: string
@@ -57,11 +99,11 @@ export const themePresets: Record<string, ThemePreset> = {
             '--secondary': 'oklch(0.15 0.03 250)',
             '--secondary-foreground': 'oklch(0.68 0.1 230)',
             '--muted': 'oklch(0.12 0.02 250)',
-            '--muted-foreground': 'oklch(0.55 0.08 230)',
+            '--muted-foreground': 'oklch(0.58 0.08 230)',
             '--accent': 'oklch(0.7 0.15 200)',
             '--accent-foreground': 'oklch(0.08 0.02 250)',
-            '--destructive': 'oklch(0.55 0.2 25)',
-            '--destructive-foreground': 'oklch(0.95 0 0)',
+            '--destructive': 'oklch(0.62 0.2 25)',
+            '--destructive-foreground': 'oklch(0.08 0.02 250)',
             '--border': 'oklch(0.28 0.08 230)',
             '--input': 'oklch(0.12 0.02 250)',
             '--ring': 'oklch(0.72 0.15 230)',
@@ -77,6 +119,7 @@ export const themePresets: Record<string, ThemePreset> = {
             '--sidebar-ring': 'oklch(0.72 0.15 230)',
             '--chart-primary': 'oklch(0.72 0.12 230)',
             '--chart-secondary': 'oklch(0.72 0.12 300)',
+            ...semanticThemeVars,
         },
         xterm: {
             background: '#0a0a1a',
@@ -137,6 +180,7 @@ export const themePresets: Record<string, ThemePreset> = {
             '--sidebar-ring': 'oklch(0.7 0.1 210)',
             '--chart-primary': 'oklch(0.65 0.1 210)',
             '--chart-secondary': 'oklch(0.65 0.1 310)',
+            ...semanticThemeVars,
         },
         xterm: {
             background: '#1a1a1a',
@@ -197,6 +241,7 @@ export const themePresets: Record<string, ThemePreset> = {
             '--sidebar-ring': 'oklch(0.45 0.12 250)',
             '--chart-primary': 'oklch(0.5 0.12 250)',
             '--chart-secondary': 'oklch(0.5 0.12 310)',
+            ...semanticThemeVars,
         },
         xterm: {
             background: '#ffffff',
@@ -257,6 +302,7 @@ export const themePresets: Record<string, ThemePreset> = {
             '--sidebar-ring': 'oklch(0.7 0.18 145)',
             '--chart-primary': 'oklch(0.7 0.18 145)',
             '--chart-secondary': 'oklch(0.65 0.15 200)',
+            ...semanticThemeVars,
         },
         xterm: {
             background: '#0a1a0a',
@@ -322,6 +368,7 @@ export const themePresets: Record<string, ThemePreset> = {
             '--sidebar-accent-foreground': 'oklch(0.922 0 0)', // #e5e5e5
             '--sidebar-border': 'oklch(0.265 0 0)',        // #2a2a2a
             '--sidebar-ring': 'oklch(0.623 0.214 259)',    // #3b82f6
+            ...semanticThemeVars,
         },
         xterm: {
             background: '#0a0a0a',

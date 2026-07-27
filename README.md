@@ -19,7 +19,7 @@ It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running 
 - **AI agent monitoring** — see which agents are active, waiting for input, or errored across all sessions at a glance.
 - **Push notifications** — get browser/desktop notifications when an agent needs attention, even with the tab backgrounded.
 - **Installable Web App** — install the HTTPS Hub as a focused PWA on desktop or add it to an iPhone/iPad Home Screen.
-- **Quick switcher** — Ctrl+K to jump between sessions and windows instantly, hands never leave the keyboard.
+- **Command Palette** — search hosts, sessions, windows, agents, and application commands from one keyboard-first interface.
 - **Single binary** — Go backend with the React frontend embedded. No separate processes, no Node runtime needed in production.
 - **Unix socket + HTTP** — local CLI notifications go through a Unix socket for zero-config, with HTTP as fallback.
 - **Gateway friendly** — serves a loopback HTTP origin designed for trusted TLS termination at Cloudflare Tunnel or Nginx.
@@ -76,7 +76,7 @@ mode `0600` in `~/.config/tmuxatlas/.env`.
 Override the defaults when needed:
 
 ```bash
-TMUXATLAS_VERSION=v0.8.0 \
+TMUXATLAS_VERSION=v0.9.0 \
 TMUXATLAS_INSTALL_DIR=/usr/local/bin \
 sh install.sh
 ```
@@ -352,17 +352,120 @@ shows the normal disconnected state rather than stale terminal content.
 
 ### Keyboard shortcuts
 
-Press `Ctrl+/` (or `Cmd+/` on macOS) to see all shortcuts, or click the `?` in the status bar.
+Press `Ctrl+/` (`Cmd+/` on macOS) to see the shortcuts generated from the
+current command registry, or click the `?` in the status bar. In the table
+below, **Mod** means `Ctrl` on Linux/Windows and `Cmd` on macOS.
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+K` | Quick switcher — jump between sessions and windows |
-| `Ctrl+J` | Jump to next alert (cycles through waiting/error agents) |
-| `Ctrl+H` | Overview |
-| `Ctrl+,` | Settings |
-| `Ctrl+\` | Toggle sidebar |
-| `Ctrl+L` | Lock / sign out |
-| `Ctrl+/` | Keyboard shortcuts help |
+| `Mod+K` | Open the Command Palette (configurable to `Mod+P` or `Mod+Space` under **Settings → Interface**) |
+| `Mod+/` | Open keyboard shortcuts help |
+| `Mod+,` | Open Settings |
+| `Mod+Shift+F` | Toggle Terminal fullscreen |
+| `Mod+Shift+Z` | Toggle Terminal Zen Mode |
+
+Overview, New Session, Reconnect Terminal, Toggle Sidebar, Go to Next Alert,
+and Lock / Sign out are available as context-aware Command Palette actions.
+Commands that cannot run in the current view are shown as unavailable.
+
+Tmux control keys such as `Ctrl+H`, `Ctrl+J`, and `Ctrl+L` are deliberately not
+application shortcuts. When the Terminal has focus, unregistered control keys
+continue to the PTY unchanged.
+
+### Command Palette
+
+Open the Palette with `Mod+K`, or the alternative configured under
+**Settings → Interface**. It searches and groups:
+
+- **Hosts** by display name and stable Host ID.
+- **Sessions** by Host, name, state, and attached agent information.
+- **Windows** by Session, window name, and window index.
+- **Agents** by agent name and its Host/Session target.
+- **Commands** such as Overview, Settings, New Session, Reconnect, Fullscreen,
+  Zen Mode, Sidebar, alerts, and sign out.
+
+Pinned, recent, and needs-attention Sessions are promoted into their own
+groups. Matching is fuzzy, so a few characters are normally enough. Use
+`Up`/`Down` to move, `Enter` to open or run, and `Esc` to close; focus returns
+to the control that opened the Palette. On narrow screens it uses a
+Visual-Viewport-aware bottom sheet so the software keyboard does not push the
+results off screen.
+
+Targets with the same Session name on different Hosts remain separate. The
+Host name and stable identity shown beside each result indicate which machine
+will receive the navigation action.
+
+### Terminal Search and Zen Mode
+
+Choose **Find** in the Terminal Cockpit, **Find in Terminal** from the Terminal
+context menu, or the equivalent Cockpit action to search the current
+scrollback. Search supports live match counts, case-sensitive matching,
+previous/next navigation, and these keys:
+
+| Search key | Action |
+|------------|--------|
+| `Enter` | Next match |
+| `Shift+Enter` | Previous match |
+| `Esc` | Close Search and return focus to the Terminal |
+
+Search belongs to the current Terminal target. Switching Host or Session
+clears its query/results, and a Search module that fails to load offers
+**Retry Search** rather than consuming Terminal input.
+
+Zen Mode is intended for focused Terminal work. Enter it from the Command
+Palette or with `Mod+Shift+Z`; it hides the Sidebar, Top Bar, Status Bar, and
+alert chrome without replacing the active PTY connection. Use the floating
+**Exit Zen** control or the same shortcut to leave it. Fullscreen
+(`Mod+Shift+F`) is independent and can be combined with Zen Mode.
+
+### Clipboard and Terminal context menu
+
+The Terminal Cockpit exposes selection-aware **Copy** and connection-aware
+**Paste** actions. Right-click the Terminal, or open **More Terminal actions**,
+for **Copy selection**, **Paste**, **Find in Terminal**, and **Select all**.
+Copy sends only the current xterm selection to the browser clipboard.
+
+Clipboard Paste is always initiated by a user gesture:
+
+- A single-line value is sent immediately when the browser grants clipboard
+  access.
+- A value containing `LF` or `CR` opens a confirmation dialog that shows the
+  exact target, line count, and text before anything is sent.
+- Confirmed Paste follows the active Terminal's bracketed-paste mode.
+- If clipboard access is unavailable or denied, the clipboard is empty, the
+  target changes, or the WebSocket generation becomes stale, no paste bytes
+  are sent and the UI reports the error.
+
+### Mobile Input Composer
+
+On narrow screens, expand **Input Composer** below the Terminal to prepare a
+command in a one-to-three-line text area. **Send** behaves like typing the
+entire text and then pressing Enter, with a strict wire contract:
+
+```text
+one Binary WebSocket frame = UTF8(exact textarea value) + CR (0x0D)
+```
+
+TmuxAtlas does not trim, parse, shell-escape, interpolate, or normalize the
+textarea body. Leading/trailing spaces, quotes, shell metacharacters,
+newlines, Chinese text, and emoji therefore arrive as entered. An empty body
+is valid and sends one `CR`, equivalent to pressing Enter at the current
+prompt. The body limit is **65,535 UTF-8 bytes** (the final `CR` is separate);
+an oversized draft is retained and nothing is sent. The byte counter is more
+important than character count for Unicode input.
+
+Ordinary `Enter` inserts a newline. Use the **Send** button or
+`Ctrl+Enter`/`Cmd+Enter` to submit; an active IME composition is never
+submitted by that shortcut. Composer submissions bypass the mobile
+Ctrl/Alt modifier encoder, so a selected modifier cannot rewrite the composed
+text.
+
+Drafts exist only in page memory and are isolated by stable
+`Host ID + Session` target. They are never written to browser storage or the
+server and are never replayed automatically after a disconnect, reconnect, or
+target change. Sending captures both the target and WebSocket generation: a
+closed or stale connection keeps the draft visible and sends no frame. A
+successful send clears only that target's draft.
 
 ### Manual notifications
 
@@ -490,11 +593,13 @@ The terminal captures mouse events, so normal click-and-drag selects text inside
 
 | Platform | Select to copy |
 |----------|---------------|
-| **macOS** | Hold `Option` and drag to select, then `Cmd+C` to copy |
-| **Linux** | Hold `Shift` and drag to select, then `Ctrl+Shift+C` to copy |
-| **iOS (Safari)** | Touch-select doesn't work in the terminal. Connect a mouse or trackpad and use `Option`+drag, then copy from the context menu |
+| **macOS** | Hold `Option` and drag, then use Cockpit **Copy**, context-menu **Copy selection**, or `Cmd+C` |
+| **Linux** | Hold `Shift` and drag, then use Cockpit **Copy**, context-menu **Copy selection**, or `Ctrl+C` while the selection is active |
+| **iOS (Safari)** | Touch selection is limited in xterm. Connect a mouse or trackpad, select with `Option`+drag, then use **Copy selection** |
 
-This is standard xterm.js behavior — the modifier key tells the browser to handle the selection instead of sending the mouse events to tmux.
+The selection modifier tells xterm.js not to send that mouse gesture to tmux.
+Copy is disabled when there is no selection, so an accidental Copy action
+cannot read unrelated Terminal content.
 
 ## Tech stack
 

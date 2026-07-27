@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react'
 
 export interface Preferences {
   terminal: {
@@ -65,6 +65,9 @@ interface PreferencesContextValue {
   updatePrefs: (partial: Partial<Preferences>) => Promise<void>
   loaded: boolean
   refetch: () => Promise<void>
+  saveState: 'idle' | 'saving' | 'saved' | 'error'
+  saveError: string | null
+  retrySave: () => Promise<void>
 }
 
 export const PreferencesContext = createContext<PreferencesContextValue>({
@@ -72,50 +75,113 @@ export const PreferencesContext = createContext<PreferencesContextValue>({
   updatePrefs: async () => {},
   loaded: false,
   refetch: async () => {},
+  saveState: 'idle',
+  saveError: null,
+  retrySave: async () => {},
 })
 
 export function usePreferencesProvider() {
   const [prefs, setPrefs] = useState<Preferences>(defaultPreferences)
   const [loaded, setLoaded] = useState(false)
+  const [saveState, setSaveState] = useState<PreferencesContextValue['saveState']>('idle')
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const prefsRef = useRef(prefs)
+  const confirmedRef = useRef(prefs)
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
+  const updateVersionRef = useRef(0)
+  const failedPayloadRef = useRef<Preferences | null>(null)
+
+  const applyPrefs = useCallback((next: Preferences) => {
+    prefsRef.current = next
+    setPrefs(next)
+  }, [])
 
   const fetchPrefs = useCallback(async () => {
     try {
       const res = await fetch('/api/preferences')
-      if (!res.ok) return // don't parse 401/error responses as prefs
+      if (!res.ok) {
+        setLoaded(true)
+        return // don't parse 401/error responses as prefs
+      }
       const data = await res.json()
       // Validate shape before accepting
       if (data && typeof data.theme === 'string' && data.terminal) {
-        setPrefs(data)
+        confirmedRef.current = data
+        applyPrefs(data)
+        failedPayloadRef.current = null
+        setSaveError(null)
+        setSaveState('idle')
       }
-    } catch {
-      // ignore fetch errors
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Failed to load preferences.')
     }
     setLoaded(true)
-  }, [])
+  }, [applyPrefs])
 
   useEffect(() => {
     fetchPrefs()
   }, [fetchPrefs])
 
-  const updatePrefs = useCallback(async (partial: Partial<Preferences>) => {
-    const merged = { ...prefs, ...partial }
-    setPrefs(merged)
-    try {
+  const enqueueSave = useCallback((payload: Preferences, version: number) => {
+    const request = async () => {
       const res = await fetch('/api/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(merged),
+        body: JSON.stringify(payload),
       })
-      if (res.ok) {
-        const saved = await res.json()
-        setPrefs(saved)
+      if (!res.ok) {
+        throw new Error(`Failed to save preferences (${res.status}).`)
       }
-    } catch (err) {
-      console.error('Failed to save preferences:', err)
+      const saved = await res.json() as Preferences
+      confirmedRef.current = saved
+      failedPayloadRef.current = null
+      if (version === updateVersionRef.current) {
+        applyPrefs(saved)
+        setSaveError(null)
+        setSaveState('saved')
+      }
     }
-  }, [prefs])
 
-  return { prefs, updatePrefs, loaded, refetch: fetchPrefs }
+    const result = queueRef.current.then(request, request)
+    queueRef.current = result.catch(() => {})
+    return result.catch((error) => {
+      failedPayloadRef.current = payload
+      if (version === updateVersionRef.current) {
+        applyPrefs(confirmedRef.current)
+        setSaveState('error')
+        setSaveError(error instanceof Error ? error.message : 'Failed to save preferences.')
+      }
+    })
+  }, [applyPrefs])
+
+  const updatePrefs = useCallback(async (partial: Partial<Preferences>) => {
+    const merged = { ...prefsRef.current, ...partial }
+    const version = ++updateVersionRef.current
+    applyPrefs(merged)
+    setSaveError(null)
+    setSaveState('saving')
+    await enqueueSave(merged, version)
+  }, [applyPrefs, enqueueSave])
+
+  const retrySave = useCallback(async () => {
+    const payload = failedPayloadRef.current
+    if (!payload) return
+    const version = ++updateVersionRef.current
+    applyPrefs(payload)
+    setSaveError(null)
+    setSaveState('saving')
+    await enqueueSave(payload, version)
+  }, [applyPrefs, enqueueSave])
+
+  return {
+    prefs,
+    updatePrefs,
+    loaded,
+    refetch: fetchPrefs,
+    saveState,
+    saveError,
+    retrySave,
+  }
 }
 
 export function usePreferences() {

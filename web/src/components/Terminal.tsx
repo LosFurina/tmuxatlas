@@ -1,119 +1,310 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { useTerminal } from '../hooks/useTerminal'
-import { MobileTerminalInput, terminalKeys, type ModifierName, type ModifierState } from '../lib/mobileTerminalInput'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useTerminal,
+  type PendingTerminalPaste,
+} from '../hooks/useTerminal'
+import { useTerminalDrafts } from '../hooks/useTerminalDrafts'
+import {
+  MobileTerminalInput,
+  terminalKeys,
+  type ModifierName,
+  type ModifierState,
+} from '../lib/mobileTerminalInput'
+import { terminalTargetKey } from '../lib/terminalInput'
+import type { ConnectionState } from '../state/types'
+import {
+  deriveTerminalWorkspaceConnection,
+  type TerminalWorkspaceConnectionState,
+} from '../state/terminalConnection'
+import { TerminalCockpit } from './TerminalCockpit'
+import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
+import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
+import { TerminalSearchBar } from './TerminalSearchBar'
+import { MobileInputComposer } from './MobileInputComposer'
 
-interface TerminalProps {
-  sessionName: string
-  hostId: string
-  fullscreen?: boolean
-  onToggleFullscreen?: () => void
+export interface TerminalCommandActions {
+  reconnect: () => void
+  focus: () => void
+  openSearch: () => void
+  copy: () => Promise<void>
+  paste: () => Promise<void>
+  scrollToBottom: () => void
 }
 
-export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }: TerminalProps) {
+export interface TerminalProps {
+  sessionName: string
+  hostId: string
+  hostName?: string
+  windowLabel?: string
+  paneLabel?: string
+  toolStatus?: string
+  hubConnection?: ConnectionState
+  agentOnline?: boolean
+  sessionAvailable?: boolean
+  connectionState?: TerminalWorkspaceConnectionState
+  fullscreen?: boolean
+  zenMode?: boolean
+  onToggleFullscreen?: () => void
+  onToggleZen?: () => void
+  onRetry?: () => void
+  onCommandActionsChange?: (actions: TerminalCommandActions | null) => void
+}
+
+const terminalStateMessages: Record<TerminalWorkspaceConnectionState, string> = {
+  connecting: 'Connecting to Terminal…',
+  rehydrating: 'Synchronizing Hub state…',
+  connected: '',
+  reconnecting: 'Terminal disconnected. Reconnecting…',
+  'hub-offline': 'The Hub connection is unavailable.',
+  'agent-offline': 'The target Agent is offline.',
+  'session-ended': 'This tmux Session is no longer available.',
+  'auth-required': 'Your Hub login has expired.',
+  'reload-required': 'TmuxAtlas was updated. Reload this page to continue.',
+}
+
+export function Terminal({
+  sessionName,
+  hostId,
+  hostName,
+  windowLabel,
+  paneLabel,
+  toolStatus,
+  hubConnection,
+  agentOnline,
+  sessionAvailable,
+  connectionState,
+  fullscreen,
+  zenMode,
+  onToggleFullscreen,
+  onToggleZen,
+  onRetry,
+  onCommandActionsChange,
+}: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<MobileTerminalInput | null>(null)
   if (!inputRef.current) inputRef.current = new MobileTerminalInput()
   const input = inputRef.current
+  const targetKey = terminalTargetKey(hostId, sessionName)
+  const targetLabel = `${hostName || hostId}/${sessionName}`
+  const { getDraft, setDraft } = useTerminalDrafts()
   const [modifiers, setModifiers] = useState<ModifierState>(input.snapshot())
   const [toolbarOpen, setToolbarOpen] = useState(true)
   const [toolbarError, setToolbarError] = useState('')
+  const [toolbarFeedback, setToolbarFeedback] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [contextMenu, setContextMenu] = useState<TerminalMenuPosition | null>(null)
+  const [pendingPaste, setPendingPaste] = useState<PendingTerminalPaste | null>(null)
+  const [pasteError, setPasteError] = useState('')
   const {
-    connect, disconnect, fit, focus, termConnected,
-    sendInput, copySelection, pasteClipboard,
+    connect,
+    disconnect,
+    reconnect,
+    fit,
+    focus,
+    ptyState,
+    termConnected,
+    hasSelection,
+    isAtBottom,
+    hasNewOutput,
+    scrollToBottom,
+    adjustFontSize,
+    sendInput,
+    sendCommand,
+    copySelection,
+    pasteClipboard,
+    commitClipboardPaste,
+    selectAll,
+    searchState,
+    ensureSearchAddon,
+    findNext,
+    findPrevious,
+    clearSearch,
   } = useTerminal(sessionName, hostId, input)
+
+  const workspaceConnection = connectionState ?? deriveTerminalWorkspaceConnection({
+    hub: hubConnection ?? 'ready',
+    agentOnline: agentOnline ?? true,
+    sessionAvailable: sessionAvailable ?? true,
+    pty: ptyState,
+  }).state
+  const canPaste = workspaceConnection === 'connected' && Boolean(navigator.clipboard?.readText)
 
   useEffect(() => input.subscribe(setModifiers), [input])
   useEffect(() => {
     input.reset()
     setToolbarError('')
-  }, [input, sessionName, hostId])
+    setToolbarFeedback('')
+    setPendingPaste(null)
+    setPasteError('')
+    setContextMenu(null)
+    setSearchOpen(false)
+    clearSearch()
+  }, [clearSearch, hostId, input, sessionName])
 
   const cycleModifier = (modifier: ModifierName) => {
     input.cycle(modifier)
     focus()
   }
 
-  const runClipboard = async (action: () => Promise<unknown>) => {
+  const reportError = useCallback((error: unknown, fallback: string) => {
+    setToolbarFeedback('')
+    setToolbarError(error instanceof Error ? error.message : fallback)
+  }, [])
+
+  const copy = useCallback(async () => {
     setToolbarError('')
     try {
-      await action()
+      await copySelection()
+      setToolbarFeedback('Copied Terminal selection.')
     } catch (error) {
-      setToolbarError(error instanceof Error ? error.message : 'Clipboard operation failed.')
+      reportError(error, 'The selection could not be copied.')
+      throw error
     }
-  }
+  }, [copySelection, reportError])
+
+  const paste = useCallback(async () => {
+    setToolbarError('')
+    setToolbarFeedback('')
+    try {
+      const confirmation = await pasteClipboard()
+      if (confirmation) {
+        setPendingPaste(confirmation)
+        setPasteError('')
+      } else {
+        setToolbarFeedback('Pasted into Terminal.')
+      }
+    } catch (error) {
+      reportError(error, 'Clipboard paste failed.')
+      throw error
+    }
+  }, [pasteClipboard, reportError])
+
+  const confirmPaste = useCallback(() => {
+    if (!pendingPaste) return
+    setPasteError('')
+    try {
+      commitClipboardPaste(pendingPaste)
+      setPendingPaste(null)
+      setToolbarFeedback('Pasted multiple lines into Terminal.')
+      setToolbarError('')
+    } catch (error) {
+      setPasteError(error instanceof Error ? error.message : 'The paste could not be sent.')
+    }
+  }, [commitClipboardPaste, pendingPaste])
+
+  const openSearch = useCallback(() => {
+    setContextMenu(null)
+    setSearchOpen(true)
+  }, [])
+
+  const closeSearch = useCallback(() => {
+    clearSearch()
+    setSearchOpen(false)
+    window.requestAnimationFrame(() => focus())
+  }, [clearSearch, focus])
+
+  const sendComposerCommand = useCallback((value: string) => {
+    sendCommand(value)
+    setToolbarError('')
+  }, [sendCommand])
 
   useEffect(() => {
-    if (containerRef.current) {
-      connect(containerRef.current)
-      requestAnimationFrame(() => focus())
-      setTimeout(() => focus(), 100)
+    if (!onCommandActionsChange) return
+    const actions: TerminalCommandActions = {
+      reconnect,
+      focus,
+      openSearch,
+      copy: async () => { await copy() },
+      paste: async () => { await paste() },
+      scrollToBottom,
     }
-    return () => disconnect()
-  }, [sessionName, hostId])
+    onCommandActionsChange(actions)
+    return () => onCommandActionsChange(null)
+  }, [
+    copy,
+    focus,
+    onCommandActionsChange,
+    openSearch,
+    paste,
+    reconnect,
+    scrollToBottom,
+    targetKey,
+  ])
 
-  // Refocus terminal when WebSocket reconnects (e.g. after iPad sleep)
   useEffect(() => {
-    if (termConnected && !document.hidden) {
-      setTimeout(() => {
+    const container = containerRef.current
+    if (!container) return
+    connect(container)
+    const focusFrame = window.requestAnimationFrame(() => focus())
+    const focusTimer = window.setTimeout(() => focus(), 100)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.clearTimeout(focusTimer)
+      disconnect()
+    }
+  }, [connect, disconnect, focus])
+
+  useEffect(() => {
+    if (!termConnected || document.hidden) return
+    const timer = window.setTimeout(() => {
+      fit()
+      focus()
+      containerRef.current
+        ?.querySelector<HTMLTextAreaElement>('textarea.xterm-helper-textarea')
+        ?.focus()
+    }, 100)
+    return () => window.clearTimeout(timer)
+  }, [fit, focus, termConnected])
+
+  useEffect(() => {
+    let timer: number | null = null
+    const refocus = () => {
+      if (document.hidden || !containerRef.current) return
+      if (timer !== null) window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        timer = null
         fit()
         focus()
-        const textarea = containerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
-        textarea?.focus()
-      }, 100)
-    }
-  }, [termConnected, fit, focus])
-
-  // Refocus terminal when returning to the app/tab
-  useEffect(() => {
-    const refocus = () => {
-      if (!document.hidden && containerRef.current) {
-        setTimeout(() => {
-          fit()
-          focus()
-          // On iPad, xterm's focus() doesn't always work — directly focus the textarea
-          const textarea = containerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
-          textarea?.focus()
-        }, 200)
-      }
+        containerRef.current
+          ?.querySelector<HTMLTextAreaElement>('textarea.xterm-helper-textarea')
+          ?.focus()
+      }, 200)
     }
     document.addEventListener('visibilitychange', refocus)
-    // iOS also fires focus on the window when returning from app switcher
     window.addEventListener('focus', refocus)
     return () => {
       document.removeEventListener('visibilitychange', refocus)
       window.removeEventListener('focus', refocus)
+      if (timer !== null) window.clearTimeout(timer ?? undefined)
     }
   }, [fit, focus])
 
   useEffect(() => {
-    if (!containerRef.current) return
+    const container = containerRef.current
+    if (!container) return
     let frame: number | null = null
     const scheduleFit = () => {
-      if (frame !== null) cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => {
+      if (frame !== null) window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
         frame = null
         fit()
       })
     }
-    const observer = new ResizeObserver(() => {
-      scheduleFit()
-    })
-    observer.observe(containerRef.current)
+    const observer = new ResizeObserver(scheduleFit)
+    observer.observe(container)
     window.visualViewport?.addEventListener('resize', scheduleFit)
     window.visualViewport?.addEventListener('scroll', scheduleFit)
     return () => {
       observer.disconnect()
-      if (frame !== null) cancelAnimationFrame(frame)
+      if (frame !== null) window.cancelAnimationFrame(frame)
       window.visualViewport?.removeEventListener('resize', scheduleFit)
       window.visualViewport?.removeEventListener('scroll', scheduleFit)
     }
   }, [fit])
 
-  // Touch scroll -> wheel events for tmux mouse mode
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
-
     let lastY = 0
     let lastTime = 0
     let accumulated = 0
@@ -121,101 +312,81 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
     let inertiaId: number | null = null
     let lastClientX = 0
     let lastClientY = 0
-    const BASE_LINE_HEIGHT = 20
-    const MIN_VELOCITY = 0.5
-    const FRICTION = 0.92
-    const INERTIA_STOP = 0.3
+    const lineHeight = 20
 
     const dispatchScroll = (lines: number, clientX: number, clientY: number) => {
       const target = container.querySelector('.xterm-screen')
       if (!target) return
-      for (let i = 0; i < Math.abs(lines); i++) {
-        const wheelEvent = new WheelEvent('wheel', {
-          deltaY: lines > 0 ? BASE_LINE_HEIGHT : -BASE_LINE_HEIGHT,
-          deltaMode: 0,
+      for (let index = 0; index < Math.abs(lines); index++) {
+        target.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: lines > 0 ? lineHeight : -lineHeight,
           clientX,
           clientY,
           bubbles: true,
           cancelable: true,
-        })
-        target.dispatchEvent(wheelEvent)
+        }))
       }
     }
 
     const processAccumulated = (clientX: number, clientY: number) => {
       const speed = Math.abs(velocity)
-      let multiplier = 1
-      if (speed > 2) multiplier = 2
-      if (speed > 4) multiplier = 3
-      if (speed > 7) multiplier = 5
-      if (speed > 12) multiplier = 8
-      const threshold = BASE_LINE_HEIGHT / multiplier
+      const multiplier = speed > 12 ? 8 : speed > 7 ? 5 : speed > 4 ? 3 : speed > 2 ? 2 : 1
+      const threshold = lineHeight / multiplier
       while (Math.abs(accumulated) >= threshold) {
-        const dir = accumulated > 0 ? 1 : -1
-        dispatchScroll(dir, clientX, clientY)
-        accumulated -= dir * threshold
+        const direction = accumulated > 0 ? 1 : -1
+        dispatchScroll(direction, clientX, clientY)
+        accumulated -= direction * threshold
       }
     }
 
     const stopInertia = () => {
-      if (inertiaId !== null) {
-        cancelAnimationFrame(inertiaId)
-        inertiaId = null
-      }
+      if (inertiaId === null) return
+      window.cancelAnimationFrame(inertiaId)
+      inertiaId = null
     }
-
     const inertiaLoop = () => {
-      if (Math.abs(velocity) < INERTIA_STOP) {
+      if (Math.abs(velocity) < 0.3) {
         velocity = 0
         accumulated = 0
         inertiaId = null
         return
       }
-      velocity *= FRICTION
+      velocity *= 0.92
       accumulated += velocity * 16
       processAccumulated(lastClientX, lastClientY)
-      inertiaId = requestAnimationFrame(inertiaLoop)
+      inertiaId = window.requestAnimationFrame(inertiaLoop)
     }
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return
       stopInertia()
-      lastY = e.touches[0].clientY
+      lastY = event.touches[0].clientY
       lastTime = performance.now()
       accumulated = 0
       velocity = 0
     }
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return
-      e.preventDefault()
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return
+      event.preventDefault()
       const now = performance.now()
-      const currentY = e.touches[0].clientY
+      const currentY = event.touches[0].clientY
       const deltaY = lastY - currentY
-      const dt = now - lastTime
-      lastClientX = e.touches[0].clientX
-      lastClientY = e.touches[0].clientY
-      if (dt > 0) {
-        const instantVelocity = deltaY / dt
-        velocity = velocity * 0.3 + instantVelocity * 0.7
-      }
+      const elapsed = now - lastTime
+      lastClientX = event.touches[0].clientX
+      lastClientY = event.touches[0].clientY
+      if (elapsed > 0) velocity = velocity * 0.3 + (deltaY / elapsed) * 0.7
       accumulated += deltaY
       lastY = currentY
       lastTime = now
       processAccumulated(lastClientX, lastClientY)
     }
-
     const onTouchEnd = () => {
-      if (Math.abs(velocity) > MIN_VELOCITY) {
-        inertiaId = requestAnimationFrame(inertiaLoop)
-      }
+      if (Math.abs(velocity) > 0.5) inertiaId = window.requestAnimationFrame(inertiaLoop)
     }
 
     container.addEventListener('touchstart', onTouchStart, { passive: true })
     container.addEventListener('touchmove', onTouchMove, { passive: false })
     container.addEventListener('touchend', onTouchEnd, { passive: true })
     container.addEventListener('touchcancel', onTouchEnd, { passive: true })
-
     return () => {
       stopInertia()
       container.removeEventListener('touchstart', onTouchStart)
@@ -225,75 +396,113 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
     }
   }, [sessionName])
 
-  // Refocus terminal after fullscreen toggle (especially needed on iPad where tapping the button steals focus)
   useEffect(() => {
-    setTimeout(() => {
+    const timer = window.setTimeout(() => {
       fit()
       focus()
-      const textarea = containerRef.current?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null
-      textarea?.focus()
     }, 100)
-  }, [fullscreen, fit, focus])
+    return () => window.clearTimeout(timer)
+  }, [fit, focus, fullscreen, zenMode])
 
-  // Cmd/Ctrl+Shift+F toggles fullscreen, Escape exits (but not if quick switcher is open)
-  useEffect(() => {
-    if (!onToggleFullscreen) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-        e.preventDefault()
-        onToggleFullscreen()
-        return
-      }
-      if (e.key === 'Escape' && fullscreen) {
-        // Don't steal Escape from overlays like the quick switcher
-        if (document.querySelector('[data-quick-switcher]')) return
-        e.preventDefault()
-        onToggleFullscreen()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [fullscreen, onToggleFullscreen])
+  const showMenuAtButton = (button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect()
+    setContextMenu({ x: rect.right - 160, y: rect.bottom + 4 })
+  }
 
   return (
-    <div className="flex-1 p-1 overflow-hidden relative group flex flex-col min-h-0">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden p-1">
+      {!zenMode && (
+        <TerminalCockpit
+          hostLabel={hostName || hostId}
+          sessionName={sessionName}
+          windowLabel={windowLabel}
+          paneLabel={paneLabel}
+          toolStatus={toolStatus}
+          connectionState={workspaceConnection}
+          canCopy={hasSelection}
+          canPaste={canPaste}
+          showScrollToBottom={!isAtBottom || hasNewOutput}
+          fullscreen={fullscreen}
+          zenMode={zenMode}
+          onSearch={openSearch}
+          onCopy={() => void copy().catch(() => {})}
+          onPaste={() => void paste().catch(() => {})}
+          onFontSize={adjustFontSize}
+          onScrollToBottom={scrollToBottom}
+          onToggleFullscreen={onToggleFullscreen}
+          onToggleZen={onToggleZen}
+          onMore={showMenuAtButton}
+        />
+      )}
+      {zenMode && onToggleZen && (
+        <button
+          type="button"
+          aria-label="Exit Terminal Zen Mode"
+          onClick={onToggleZen}
+          className="absolute right-3 top-3 z-20 min-h-11 rounded border border-border bg-card/95 px-3 text-xs text-muted-foreground"
+        >
+          Exit Zen
+        </button>
+      )}
+      {searchOpen && (
+        <TerminalSearchBar
+          state={searchState}
+          onLoad={ensureSearchAddon}
+          onFindNext={findNext}
+          onFindPrevious={findPrevious}
+          onRetry={ensureSearchAddon}
+          onClose={closeSearch}
+        />
+      )}
       <div
-        className="flex-1 min-h-0 w-full border border-border rounded bg-card relative"
-        style={{ boxShadow: 'inset 0 0 20px rgba(102, 179, 255, 0.08)' }}
+        className="relative min-h-0 w-full flex-1 rounded border border-border bg-card"
+        style={{ boxShadow: 'var(--terminal-chrome-shadow)' }}
+        onContextMenu={event => {
+          event.preventDefault()
+          setContextMenu({ x: event.clientX, y: event.clientY })
+        }}
       >
-        <div ref={containerRef} className="absolute inset-0.5 overflow-hidden rounded-sm" />
-        {/* Fullscreen toggle */}
-        {onToggleFullscreen && (
-          <button
-            onClick={onToggleFullscreen}
-            title={fullscreen ? 'Exit fullscreen (Esc / Cmd+Shift+F)' : 'Fullscreen (Cmd+Shift+F)'}
-            aria-label={fullscreen ? 'Exit terminal fullscreen' : 'Enter terminal fullscreen'}
-            className="absolute top-2 right-2 z-20 min-w-11 min-h-11 md:min-w-0 md:min-h-0 md:p-1.5 rounded bg-card border border-border text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors flex items-center justify-center"
-          >
-            {fullscreen ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
-              </svg>
-            )}
-          </button>
-        )}
-        {!termConnected && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/85 z-10 pointer-events-none rounded">
-            <div className="py-4 px-6 rounded bg-card border border-border text-foreground text-sm font-mono font-bold flex items-center gap-2.5">
-              <span className="inline-block w-2 h-2 rounded-full bg-destructive animate-[pulse_1.5s_ease-in-out_infinite]" />
-              Disconnected — reconnecting...
+        <div
+          ref={containerRef}
+          data-terminal-surface
+          className="absolute inset-0.5 overflow-hidden rounded-sm"
+        />
+        {workspaceConnection !== 'connected' && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-background/80">
+            <div className="pointer-events-auto flex max-w-[90%] items-center gap-3 rounded border border-border bg-card px-4 py-3 font-mono text-sm">
+              <span className="h-2 w-2 shrink-0 animate-[pulse_1.5s_ease-in-out_infinite] rounded-full bg-warning" />
+              <span>{terminalStateMessages[workspaceConnection]}</span>
+              {(workspaceConnection === 'reconnecting' || workspaceConnection === 'hub-offline') && (
+                <button
+                  type="button"
+                  onClick={onRetry || reconnect}
+                  className="min-h-9 rounded border border-primary/50 px-3 text-primary"
+                >
+                  Retry
+                </button>
+              )}
             </div>
           </div>
         )}
+        {pendingPaste && (
+          <TerminalPasteConfirmation
+            text={pendingPaste.text}
+            targetLabel={targetLabel}
+            error={pasteError}
+            onConfirm={confirmPaste}
+            onCancel={() => {
+              setPendingPaste(null)
+              setPasteError('')
+              focus()
+            }}
+          />
+        )}
       </div>
-      <div className="lg:hidden shrink-0 pt-1 pb-[env(safe-area-inset-bottom)]">
+
+      <div className="shrink-0 pb-[var(--safe-area-inset-bottom)] lg:hidden lg:pointer-coarse:block">
         <button
           type="button"
-          className="min-h-11 w-full border border-border rounded bg-card text-xs font-mono"
+          className="mt-1 min-h-11 w-full rounded border border-border bg-card text-xs font-mono"
           aria-expanded={toolbarOpen}
           aria-controls="mobile-terminal-toolbar"
           onClick={() => setToolbarOpen(value => !value)}
@@ -301,7 +510,12 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
           {toolbarOpen ? 'Hide terminal keys' : 'Show terminal keys'}
         </button>
         {toolbarOpen && (
-          <div id="mobile-terminal-toolbar" className="mt-1 flex gap-1 overflow-x-auto" role="toolbar" aria-label="Terminal keys">
+          <div
+            id="mobile-terminal-toolbar"
+            className="mt-1 flex gap-1 overflow-x-auto overscroll-x-contain"
+            role="toolbar"
+            aria-label="Terminal keys"
+          >
             {([
               ['Esc', terminalKeys.escape],
               ['Tab', terminalKeys.tab],
@@ -313,9 +527,18 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
               <button
                 key={label}
                 type="button"
-                aria-label={label === '←' ? 'Left arrow' : label === '↑' ? 'Up arrow' : label === '↓' ? 'Down arrow' : label === '→' ? 'Right arrow' : label}
-                className="min-w-11 min-h-11 rounded border border-border bg-card font-mono"
-                onClick={() => { sendInput(value); focus() }}
+                aria-label={
+                  label === '←' ? 'Left arrow'
+                    : label === '↑' ? 'Up arrow'
+                      : label === '↓' ? 'Down arrow'
+                        : label === '→' ? 'Right arrow'
+                          : label
+                }
+                className="min-h-11 min-w-11 rounded border border-border bg-card font-mono"
+                onClick={() => {
+                  sendInput(value)
+                  focus()
+                }}
               >
                 {label}
               </button>
@@ -326,20 +549,72 @@ export function Terminal({ sessionName, hostId, fullscreen, onToggleFullscreen }
                 type="button"
                 aria-label={`${modifier === 'ctrl' ? 'Control' : 'Alt'} modifier: ${modifiers[modifier]}`}
                 aria-pressed={modifiers[modifier] !== 'off'}
-                className="min-w-14 min-h-11 rounded border border-border bg-card font-mono data-[active=true]:border-primary data-[active=true]:text-primary"
+                className="min-h-11 min-w-14 rounded border border-border bg-card font-mono data-[active=true]:border-primary data-[active=true]:text-primary"
                 data-active={modifiers[modifier] !== 'off'}
                 onClick={() => cycleModifier(modifier)}
               >
-                {modifier === 'ctrl' ? 'Ctrl' : 'Alt'}{modifiers[modifier] === 'locked' ? ' 🔒' : modifiers[modifier] === 'once' ? ' ·' : ''}
+                {modifier === 'ctrl' ? 'Ctrl' : 'Alt'}
+                {modifiers[modifier] === 'locked' ? ' 🔒' : modifiers[modifier] === 'once' ? ' ·' : ''}
               </button>
             ))}
-            <button type="button" aria-label="Copy terminal selection" className="min-w-14 min-h-11 rounded border border-border bg-card font-mono" onClick={() => void runClipboard(copySelection)}>Copy</button>
-            <button type="button" aria-label="Paste clipboard into terminal" className="min-w-14 min-h-11 rounded border border-border bg-card font-mono" onClick={() => void runClipboard(pasteClipboard)}>Paste</button>
-            <button type="button" aria-label="Show software keyboard" className="min-w-14 min-h-11 rounded border border-border bg-card font-mono" onClick={focus}>⌨︎</button>
+            <button
+              type="button"
+              aria-label="Copy Terminal selection"
+              disabled={!hasSelection}
+              className="min-h-11 min-w-14 rounded border border-border bg-card font-mono disabled:opacity-40"
+              onClick={() => void copy().catch(() => {})}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              aria-label="Paste Clipboard into Terminal"
+              disabled={!canPaste}
+              className="min-h-11 min-w-14 rounded border border-border bg-card font-mono disabled:opacity-40"
+              onClick={() => void paste().catch(() => {})}
+            >
+              Paste
+            </button>
+            <button
+              type="button"
+              aria-label="Show software keyboard"
+              className="min-h-11 min-w-14 rounded border border-border bg-card font-mono"
+              onClick={focus}
+            >
+              ⌨︎
+            </button>
           </div>
         )}
+        <MobileInputComposer
+          key={targetKey}
+          targetKey={targetKey}
+          targetLabel={targetLabel}
+          initialDraft={getDraft(targetKey)}
+          onDraftChange={setDraft}
+          onSend={sendComposerCommand}
+        />
         {toolbarError && <p className="px-2 pt-1 text-xs text-destructive" role="alert">{toolbarError}</p>}
+        {toolbarFeedback && <p className="px-2 pt-1 text-xs text-success" role="status">{toolbarFeedback}</p>}
       </div>
+
+      {contextMenu && (
+        <TerminalContextMenu
+          position={contextMenu}
+          canCopy={hasSelection}
+          canPaste={canPaste}
+          onCopy={() => void copy().catch(() => {})}
+          onPaste={() => void paste().catch(() => {})}
+          onFind={openSearch}
+          onSelectAll={() => {
+            selectAll()
+            focus()
+          }}
+          onClose={() => {
+            setContextMenu(null)
+            focus()
+          }}
+        />
+      )}
     </div>
   )
 }

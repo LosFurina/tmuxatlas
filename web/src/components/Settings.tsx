@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { usePreferences, type Preferences } from '../hooks/usePreferences'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { themePresets, applyTheme } from '../theme'
@@ -6,6 +6,7 @@ import { cn } from '../lib/utils'
 import { AgentStatusList, SetupCommandBox } from './Setup'
 import { PasskeySettings } from './PasskeySettings'
 import type { PWAInstallState } from '../hooks/usePWAInstall'
+import { Button, ToastProvider, useToast } from './ui'
 
 const terminalFontFamilies = [
   'Space Mono',
@@ -176,15 +177,19 @@ const sectionLabels: Record<typeof sectionIds[number], string> = {
   security: 'Security',
 }
 
-export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogout, pwaInstall }: {
+interface SettingsProps {
   pushState: string
   onPushSubscribe: () => void
   onPushUnsubscribe: () => void
   onLogout?: () => void
   pwaInstall: PWAInstallState
-}) {
-  const { prefs, updatePrefs } = usePreferences()
-  const [saving, setSaving] = useState(false)
+}
+
+function SettingsContent({ pushState, onPushSubscribe, onPushUnsubscribe, onLogout, pwaInstall }: SettingsProps) {
+  const { prefs, updatePrefs, saveState, saveError, retrySave } = usePreferences()
+  const { dismiss, toast } = useToast()
+  const previousSaveState = useRef(saveState)
+  const feedbackToast = useRef<string | null>(null)
   const [showCustomColors, setShowCustomColors] = useState(() => Object.keys(prefs.custom_theme || {}).length > 0)
   const [agentStatus, setAgentStatus] = useState<{ agents: { name: string; key: string; installed: boolean; configured: boolean }[]; setup_command: string } | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
@@ -202,10 +207,33 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
     fetchAgentStatus()
   }, [fetchAgentStatus])
 
+  useEffect(() => {
+    if (previousSaveState.current === saveState) return
+    previousSaveState.current = saveState
+
+    if (feedbackToast.current) {
+      dismiss(feedbackToast.current)
+      feedbackToast.current = null
+    }
+
+    if (saveState === 'saved') {
+      feedbackToast.current = toast({
+        title: 'Settings saved',
+        description: 'Your preferences are up to date.',
+        variant: 'success',
+      })
+    } else if (saveState === 'error') {
+      feedbackToast.current = toast({
+        title: 'Settings not saved',
+        description: saveError ?? 'Check your connection and try again.',
+        variant: 'error',
+        duration: 0,
+      })
+    }
+  }, [dismiss, saveError, saveState, toast])
+
   const update = async (partial: Partial<Preferences>) => {
-    setSaving(true)
     await updatePrefs(partial)
-    setSaving(false)
   }
 
   const updateNested = async <K extends keyof Preferences>(
@@ -246,11 +274,45 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   const hasCustomColors = Object.values(customTheme).some(v => !!v)
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto font-mono text-sm font-bold">
+    <div
+      className="flex-1 p-6 overflow-y-auto font-mono text-sm font-bold"
+      aria-busy={saveState === 'saving' || undefined}
+    >
       <div className="max-w-2xl">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex items-start justify-between gap-4 mb-5">
           <h2 className="text-lg font-bold text-foreground tracking-wider">SETTINGS</h2>
-          {saving && <span className="text-xs text-primary">Saving...</span>}
+          <div className="min-h-7 text-right">
+            {saveState === 'saving' && (
+              <span className="text-xs text-primary" role="status" aria-live="polite">
+                Saving…
+              </span>
+            )}
+            {saveState === 'saved' && (
+              <span className="text-xs text-success" role="status" aria-live="polite">
+                Saved
+              </span>
+            )}
+            {saveState === 'error' && (
+              <div
+                className="flex max-w-md flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs font-normal text-destructive"
+                role="alert"
+                aria-live="assertive"
+              >
+                <span>
+                  <strong className="font-semibold">Changes were not saved.</strong>
+                  {saveError && ` ${saveError}`}
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  aria-label="Retry saving preferences"
+                  onClick={() => void retrySave()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Jump nav */}
@@ -583,5 +645,13 @@ export function Settings({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
         </div>
       </div>
     </div>
+  )
+}
+
+export function Settings(props: SettingsProps) {
+  return (
+    <ToastProvider>
+      <SettingsContent {...props} />
+    </ToastProvider>
   )
 }

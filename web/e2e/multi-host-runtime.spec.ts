@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const baseURL = 'http://localhost:17656'
+const primaryModifier = process.platform === 'darwin' ? 'Meta' : 'Control'
 let server: ChildProcessWithoutNullStreams
 let testHome: string
 
@@ -115,14 +116,15 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
 
   await page.goto(baseURL)
 
-  const remoteGroup = page.getByRole('listitem').filter({ hasText: 'remotesame' })
-  const remoteSession = remoteGroup.getByRole('button').filter({ hasText: 'same' })
+  const remoteSession = page.getByRole('button', {
+    name: /^Open remote session same,/,
+  })
   await remoteSession.click()
   await expect(page).toHaveURL(`${baseURL}/session/remote-host/same`)
   await expect.poll(() => websocketURLs.some(url =>
     url.includes('/ws/session?') && url.includes('host=remote-host') && url.includes('name=same'),
   )).toBe(true)
-  await page.setViewportSize({ width: 980, height: 720 })
+  await page.setViewportSize({ width: 1200, height: 700 })
   await page.locator('.xterm-helper-textarea').pressSequentially('typed')
   await expect.poll(() => terminalFrames.some(frame =>
     typeof frame === 'string' && JSON.parse(frame).type === 'resize',
@@ -131,16 +133,20 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
     terminalFrames.filter((frame): frame is Buffer => Buffer.isBuffer(frame)),
   ).toString().includes('typed')).toBe(true)
 
-  await page.keyboard.press('Control+k')
-  await page.getByPlaceholder('Go to session or window...').fill('remoteeditor')
-  await page.getByText('remote: same/editor', { exact: true }).click()
+  await page.keyboard.press(`${primaryModifier}+k`)
+  const palette = page.getByRole('dialog', { name: 'Command Palette' })
+  await palette.getByRole('combobox').fill('remote editor')
+  await palette.getByRole('option')
+    .filter({ hasText: 'same / editor' })
+    .filter({ hasText: 'remote' })
+    .click()
   await expect.poll(() => mutations.find(entry => entry.path.endsWith('/select-window'))?.body).toEqual({
     host_id: 'remote-host', session: 'same', window: 1,
   })
 
   await remoteSession.click({ button: 'right' })
-  await page.getByText('Rename', { exact: true }).click()
-  const renameInput = page.locator('aside input').first()
+  await page.getByRole('menuitem', { name: 'Rename' }).click()
+  const renameInput = page.getByRole('textbox', { name: 'Rename same' })
   await renameInput.fill('renamed')
   await renameInput.press('Enter')
   await expect.poll(() => mutations.find(entry => entry.path.endsWith('/rename'))?.body).toEqual({
@@ -150,7 +156,7 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
 
   await page.getByTitle('New session').click()
   await page.getByPlaceholder('Session name...').fill('created')
-  await page.locator('select').selectOption('remote-host')
+  await page.getByRole('combobox', { name: 'Host' }).selectOption('remote-host')
   await page.getByRole('button', { name: 'Create' }).click()
   await expect.poll(() => mutations.find(entry => entry.path.endsWith('/new'))?.body).toEqual({
     host_id: 'remote-host', session: 'created',
@@ -158,11 +164,12 @@ test('keeps same-name sessions bound to explicit hosts and surfaces structured e
 
   rejectRename = true
   await page.goto(baseURL)
-  const localGroup = page.getByRole('listitem').filter({ hasText: 'localsame' })
-  const localSession = localGroup.getByRole('button').filter({ hasText: 'same' })
+  const localSession = page.getByRole('button', {
+    name: /^Open local session same,/,
+  })
   await localSession.click({ button: 'right' })
-  await page.getByText('Rename', { exact: true }).click()
-  const failedRenameInput = page.locator('aside input').first()
+  await page.getByRole('menuitem', { name: 'Rename' }).click()
+  const failedRenameInput = page.getByRole('textbox', { name: 'Rename same' })
   await failedRenameInput.fill('will-fail')
   await failedRenameInput.press('Enter')
   await expect(page.getByText('The selected host is offline.')).toBeVisible()

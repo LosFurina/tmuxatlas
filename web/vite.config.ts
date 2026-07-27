@@ -12,6 +12,12 @@ export default defineConfig({
     clearMocks: true,
   },
   build: {
+    target: 'es2022',
+    minify: 'terser',
+    terserOptions: {
+      compress: { passes: 2 },
+      format: { comments: false },
+    },
     outDir: '../pkg/server/dist',
     emptyOutDir: true,
     rollupOptions: {

@@ -27,4 +27,13 @@ describe('MobileTerminalInput', () => {
     expect(input.snapshot()).toEqual({ ctrl: 'off', alt: 'off' })
     expect(listener).toHaveBeenCalled()
   })
+
+  it('clears one-shot modifiers without changing locked modifiers', () => {
+    const input = new MobileTerminalInput()
+    input.cycle('ctrl')
+    input.cycle('alt')
+    input.cycle('alt')
+    input.consumeOneShot()
+    expect(input.snapshot()).toEqual({ ctrl: 'off', alt: 'locked' })
+  })
 })

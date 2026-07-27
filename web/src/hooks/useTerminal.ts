@@ -1,134 +1,276 @@
-import { useRef, useCallback, useState } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Terminal, type IDisposable } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { ClipboardAddon, type IClipboardProvider, type ClipboardSelectionType } from '@xterm/addon-clipboard'
+import {
+  ClipboardAddon,
+  type ClipboardSelectionType,
+  type IClipboardProvider,
+} from '@xterm/addon-clipboard'
+import type { ISearchOptions, SearchAddon } from '@xterm/addon-search'
 import { usePreferences } from './usePreferences'
 import { getXtermTheme } from '../theme'
 import type { MobileTerminalInput } from '../lib/mobileTerminalInput'
+import {
+  TerminalInputError,
+  encodeTerminalCommand,
+  encodeTerminalPaste,
+  isMultilineTerminalPaste,
+  terminalTargetKey,
+  type TerminalConnectionCapture,
+} from '../lib/terminalInput'
 import { ensureTerminalFont } from '../fonts'
 import '@xterm/xterm/css/xterm.css'
 
-// Monotonically increasing ID to track which connection is "current"
-let nextConnId = 0
+export type PtyConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected'
 
-// Pending clipboard text to write on the next user interaction.
-// Clipboard API requires user activation; OSC 52 and selection events arrive
-// asynchronously, so we stash the text and flush it on the next mousedown/keydown.
-let pendingClipboard: string | null = null
+export interface TerminalSearchState {
+  loading: boolean
+  loaded: boolean
+  error: string
+  resultIndex: number
+  resultCount: number
+}
 
-// Synchronous fallback using execCommand('copy') — works inside and outside
-// user-gesture context in most browsers because the textarea selection counts
-// as a copy-eligible action.
+export interface PendingTerminalPaste extends TerminalConnectionCapture {
+  text: string
+  multiline: boolean
+}
+
+const initialSearchState: TerminalSearchState = {
+  loading: false,
+  loaded: false,
+  error: '',
+  resultIndex: -1,
+  resultCount: 0,
+}
+
 function execCommandCopy(text: string): boolean {
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  ta.style.opacity = '0'
-  document.body.appendChild(ta)
-  ta.select()
-  let ok = false
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
   try {
-    ok = document.execCommand('copy')
-  } catch { /* ignored */ }
-  document.body.removeChild(ta)
-  return ok
-}
-
-// Try to write to clipboard immediately; on failure, use execCommand fallback;
-// if that also fails, stash for deferred write on next user gesture.
-function copyToClipboard(text: string): Promise<void> {
-  if (navigator.clipboard) {
-    return navigator.clipboard.writeText(text).catch(() => {
-      if (!execCommandCopy(text)) {
-        pendingClipboard = text
-      }
-    })
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
   }
-  if (!execCommandCopy(text)) {
-    pendingClipboard = text
-  }
-  return Promise.resolve()
+  document.body.removeChild(textarea)
+  return copied
 }
 
-// Flush any stashed clipboard text — call from a user gesture handler.
-function flushPendingClipboard(): void {
-  if (pendingClipboard !== null) {
-    const text = pendingClipboard
-    pendingClipboard = null
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch(() => {
-        if (!execCommandCopy(text)) {
-          pendingClipboard = text
-        }
-      })
-    } else if (!execCommandCopy(text)) {
-      pendingClipboard = text
-    }
-  }
+function clipboardError(action: 'read' | 'write', error?: unknown): Error {
+  const message = action === 'read'
+    ? 'Clipboard read was denied or is unavailable.'
+    : 'Clipboard write was denied or is unavailable.'
+  if (error instanceof Error && error.message) return new Error(`${message} ${error.message}`)
+  return new Error(message)
 }
 
-// Request clipboard-write permission so future writes don't require user activation.
-// Chromium grants this persistently once allowed; Firefox/Safari ignore it (harmless).
-function requestClipboardPermission(): void {
-  navigator.permissions?.query({ name: 'clipboard-write' as PermissionName }).catch(() => {})
-}
-
-// Custom clipboard provider that uses the fallback copy for OSC 52 writes
-const clipboardProvider: IClipboardProvider = {
-  readText(selection: ClipboardSelectionType): Promise<string> {
-    if (selection !== 'c') return Promise.resolve('')
-    return navigator.clipboard?.readText?.() ?? Promise.resolve('')
-  },
-  writeText(selection: ClipboardSelectionType, text: string): Promise<void> {
-    if (selection !== 'c') return Promise.resolve()
-    return copyToClipboard(text)
-  },
-}
-
-export function useTerminal(sessionName: string, hostId: string, mobileInput?: MobileTerminalInput) {
+export function useTerminal(
+  sessionName: string,
+  hostId: string,
+  mobileInput?: MobileTerminalInput,
+) {
+  const targetKey = terminalTargetKey(hostId, sessionName)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const containerRef = useRef<HTMLElement | null>(null)
-  const reconnectTimer = useRef<number | undefined>(undefined)
-  const activeConnId = useRef(0)
-  const [termConnected, setTermConnected] = useState(false)
+  const terminalDisposablesRef = useRef<IDisposable[]>([])
+  const domCleanupRef = useRef<Array<() => void>>([])
+  const layoutCleanupRef = useRef<Array<() => void>>([])
+  const reconnectTimerRef = useRef<number | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const terminalGenerationRef = useRef(0)
+  const socketGenerationRef = useRef(0)
+  const activeTargetKeyRef = useRef('')
+  const openSocketRef = useRef<(() => void) | null>(null)
+  const pendingClipboardRef = useRef<string | null>(null)
+  const searchAddonRef = useRef<SearchAddon | null>(null)
+  const searchPromiseRef = useRef<Promise<SearchAddon> | null>(null)
+  const searchResultDisposableRef = useRef<IDisposable | null>(null)
+  const followOutputRef = useRef(true)
   const { prefs } = usePreferences()
 
-  const cleanupWs = useCallback(() => {
-    if (wsRef.current) {
-      // Nullify handlers BEFORE closing to prevent ghost reconnects
-      wsRef.current.onclose = null
-      wsRef.current.onerror = null
-      wsRef.current.onmessage = null
-      wsRef.current.close()
-      wsRef.current = null
+  const [ptyState, setPtyState] = useState<PtyConnectionState>('disconnected')
+  const [hasSelection, setHasSelection] = useState(false)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+  const [hasNewOutput, setHasNewOutput] = useState(false)
+  const [searchState, setSearchState] = useState<TerminalSearchState>(initialSearchState)
+
+  const clearReconnectTimer = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
     }
   }, [])
 
+  const closeSocket = useCallback(() => {
+    const socket = wsRef.current
+    wsRef.current = null
+    if (!socket) return
+    socket.onopen = null
+    socket.onmessage = null
+    socket.onerror = null
+    socket.onclose = null
+    socket.close()
+  }, [])
+
+  const disposeSearch = useCallback((resetState = true) => {
+    searchResultDisposableRef.current?.dispose()
+    searchResultDisposableRef.current = null
+    searchAddonRef.current?.dispose()
+    searchAddonRef.current = null
+    searchPromiseRef.current = null
+    if (resetState) setSearchState(initialSearchState)
+  }, [])
+
+  const cleanupTerminal = useCallback((resetState = true) => {
+    clearReconnectTimer()
+    openSocketRef.current = null
+    closeSocket()
+    domCleanupRef.current.splice(0).forEach(cleanup => cleanup())
+    layoutCleanupRef.current.splice(0).forEach(cleanup => cleanup())
+    terminalDisposablesRef.current.splice(0).forEach(disposable => disposable.dispose())
+    disposeSearch(resetState)
+    termRef.current?.dispose()
+    termRef.current = null
+    fitAddonRef.current = null
+    containerRef.current = null
+    pendingClipboardRef.current = null
+    activeTargetKeyRef.current = ''
+    terminalGenerationRef.current++
+    socketGenerationRef.current++
+    followOutputRef.current = true
+    reconnectAttemptsRef.current = 0
+  }, [clearReconnectTimer, closeSocket, disposeSearch])
+
+  useEffect(() => () => cleanupTerminal(false), [cleanupTerminal])
+
+  const writeClipboard = useCallback(async (text: string, deferOnFailure = false) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return
+      }
+      if (execCommandCopy(text)) return
+    } catch (error) {
+      if (execCommandCopy(text)) return
+      if (!deferOnFailure) throw clipboardError('write', error)
+    }
+    if (deferOnFailure) {
+      pendingClipboardRef.current = text
+      return
+    }
+    throw clipboardError('write')
+  }, [])
+
+  const flushPendingClipboard = useCallback(() => {
+    const text = pendingClipboardRef.current
+    if (text === null) return
+    pendingClipboardRef.current = null
+    void writeClipboard(text, true)
+  }, [writeClipboard])
+
+  const captureConnection = useCallback((): TerminalConnectionCapture | null => {
+    const socket = wsRef.current
+    if (
+      activeTargetKeyRef.current !== targetKey ||
+      !socket ||
+      socket.readyState !== WebSocket.OPEN
+    ) {
+      return null
+    }
+    return {
+      targetKey,
+      generation: socketGenerationRef.current,
+    }
+  }, [targetKey])
+
+  const assertCurrentConnection = useCallback((capture: TerminalConnectionCapture) => {
+    if (
+      capture.targetKey !== targetKey ||
+      activeTargetKeyRef.current !== capture.targetKey ||
+      socketGenerationRef.current !== capture.generation
+    ) {
+      throw new TerminalInputError(
+        'stale-connection',
+        'The Terminal target changed before the input could be sent.',
+      )
+    }
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new TerminalInputError('not-connected', 'The Terminal is not connected.')
+    }
+    return socket
+  }, [targetKey])
+
+  const sendRawInput = useCallback((
+    data: Uint8Array,
+    capture?: TerminalConnectionCapture,
+  ): boolean => {
+    const expected = capture ?? captureConnection()
+    if (!expected) {
+      throw new TerminalInputError('not-connected', 'The Terminal is not connected.')
+    }
+    const socket = assertCurrentConnection(expected)
+    try {
+      socket.send(data)
+    } catch {
+      throw new TerminalInputError('send-failed', 'The Terminal rejected the input frame.')
+    }
+    return true
+  }, [assertCurrentConnection, captureConnection])
+
+  const sendInput = useCallback((data: string): boolean => {
+    try {
+      const bytes = mobileInput
+        ? mobileInput.encode(data)
+        : new TextEncoder().encode(data)
+      return sendRawInput(bytes)
+    } catch {
+      return false
+    }
+  }, [mobileInput, sendRawInput])
+
+  const sendCommand = useCallback((value: string): boolean => {
+    const capture = captureConnection()
+    if (!capture) {
+      throw new TerminalInputError('not-connected', 'The Terminal is not connected.')
+    }
+    const frame = encodeTerminalCommand(value)
+    sendRawInput(frame, capture)
+    mobileInput?.consumeOneShot()
+    return true
+  }, [captureConnection, mobileInput, sendRawInput])
+
   const connect = useCallback((container: HTMLElement) => {
-    // Invalidate any previous connection's reconnect attempts
-    const connId = ++nextConnId
-    activeConnId.current = connId
-
-    // Clean up any existing terminal and WS
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current)
-      reconnectTimer.current = undefined
-    }
-    cleanupWs()
-    if (termRef.current) {
-      termRef.current.dispose()
+    cleanupTerminal()
+    if (!hostId) {
+      setPtyState('disconnected')
+      throw new Error('terminal target is missing host identity')
     }
 
+    const terminalGeneration = ++terminalGenerationRef.current
+    activeTargetKeyRef.current = targetKey
     containerRef.current = container
+    followOutputRef.current = true
+    setHasSelection(false)
+    setIsAtBottom(true)
+    setHasNewOutput(false)
+    setPtyState('connecting')
 
     const xtermTheme = getXtermTheme(prefs.theme)
     const fontFamily = `'${prefs.terminal.font_family}', 'Symbols Nerd Font Mono', 'JetBrains Mono', Menlo, Monaco, monospace`
-
-    // Create terminal with theme from preferences
     const term = new Terminal({
       theme: xtermTheme,
       fontSize: prefs.terminal.font_size,
@@ -139,193 +281,253 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
       rightClickSelectsWord: true,
       macOptionClickForcesSelection: true,
     })
-
     const fitAddon = new FitAddon()
+    const clipboardProvider: IClipboardProvider = {
+      readText(selection: ClipboardSelectionType): Promise<string> {
+        if (selection !== 'c') return Promise.resolve('')
+        return navigator.clipboard?.readText?.() ?? Promise.resolve('')
+      },
+      writeText(selection: ClipboardSelectionType, text: string): Promise<void> {
+        if (selection !== 'c') return Promise.resolve()
+        return writeClipboard(text, true)
+      },
+    }
+
     term.loadAddon(fitAddon)
     term.loadAddon(new WebLinksAddon())
     term.loadAddon(new ClipboardAddon(undefined, clipboardProvider))
-
     termRef.current = term
     fitAddonRef.current = fitAddon
-    // DEBUG: expose for diagnostics (remove after debugging)
-    ;(window as any).__term = term
-
     term.open(container)
+
+    const doFit = () => {
+      if (
+        terminalGenerationRef.current !== terminalGeneration ||
+        termRef.current !== term ||
+        container.clientWidth <= 0 ||
+        container.clientHeight <= 0
+      ) {
+        return
+      }
+      try {
+        fitAddon.fit()
+        if (followOutputRef.current) term.scrollToBottom()
+      } catch {
+        // Layout can be transiently unavailable while an overlay or viewport changes.
+      }
+    }
+
+    const animationFrame = window.requestAnimationFrame(doFit)
+    layoutCleanupRef.current.push(() => window.cancelAnimationFrame(animationFrame))
+    for (const delay of [100, 300]) {
+      const timer = window.setTimeout(doFit, delay)
+      layoutCleanupRef.current.push(() => window.clearTimeout(timer))
+    }
+
     void ensureTerminalFont(prefs.terminal.font_family).then((loaded) => {
-      if (!loaded || activeConnId.current !== connId || termRef.current !== term) return
+      if (
+        !loaded ||
+        terminalGenerationRef.current !== terminalGeneration ||
+        termRef.current !== term
+      ) {
+        return
+      }
       term.options.fontFamily = fontFamily
       doFit()
     })
 
-    // Request clipboard-write permission early so OSC 52 writes may work directly
-    requestClipboardPermission()
+    terminalDisposablesRef.current.push(
+      term.onSelectionChange(() => setHasSelection(term.hasSelection())),
+      term.onScroll(viewportY => {
+        const atBottom = viewportY >= term.buffer.active.baseY
+        followOutputRef.current = atBottom
+        setIsAtBottom(atBottom)
+        if (atBottom) setHasNewOutput(false)
+      }),
+      term.onData(data => {
+        const socket = wsRef.current
+        if (!socket || socket.readyState !== WebSocket.OPEN) return
+        const bytes = mobileInput
+          ? mobileInput.encode(data)
+          : new TextEncoder().encode(data)
+        try {
+          socket.send(bytes)
+        } catch {
+          setPtyState('reconnecting')
+        }
+      }),
+      term.onResize(({ cols, rows }) => {
+        const socket = wsRef.current
+        if (!socket || socket.readyState !== WebSocket.OPEN) return
+        try {
+          socket.send(JSON.stringify({ type: 'resize', cols, rows }))
+        } catch {
+          setPtyState('reconnecting')
+        }
+      }),
+    )
 
-    // Cmd/Ctrl+C: copy selection to clipboard if text is selected,
-    // otherwise let it pass through as SIGINT.
-    // Also flush any pending clipboard on every keydown (user gesture context).
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type === 'keydown') {
-        flushPendingClipboard()
-      }
-      // Don't let xterm process global app shortcuts (quick switcher, overview, etc.)
-      if (e.type === 'keydown' && (e.metaKey || e.ctrlKey)) {
-        const key = e.key.toLowerCase()
-        if (!e.shiftKey && (key === 'k' || key === 'p' || key === 'h' ||
-            key === 'l' || key === ',' || key === '\\' || key === ' ')) {
-          return false
-        }
-        if (e.shiftKey && (key === '/' || key === '?')) {
-          return false
-        }
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'c' && e.type === 'keydown') {
-        const selection = term.getSelection()
-        if (selection) {
-          // Direct user gesture — clipboard write succeeds without stashing
-          navigator.clipboard?.writeText(selection)
-          term.clearSelection()
-          return false // prevent sending to terminal
-        }
-        // Explicitly send SIGINT (0x03) — iPad/tablets may not translate
-        // Ctrl+C correctly, causing it to act as Enter instead
-        const currentWs = wsRef.current
-        if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-          currentWs.send(new Uint8Array([0x03]))
-        }
+    term.attachCustomKeyEventHandler(event => {
+      if (
+        event.type === 'keydown' &&
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === 'c' &&
+        term.hasSelection()
+      ) {
+        void writeClipboard(term.getSelection()).then(() => {
+          if (terminalGenerationRef.current === terminalGeneration) setHasSelection(false)
+        }).catch(() => {})
+        term.clearSelection()
         return false
       }
       return true
     })
 
-    // Auto-copy to clipboard on selection (like iTerm2 / most terminal emulators)
-    term.onSelectionChange(() => {
-      const selection = term.getSelection()
-      if (selection) {
-        copyToClipboard(selection)
-      }
-    })
-
-    // Flush deferred clipboard writes on mouse interaction (capture phase
-    // to intercept before xterm.js can stopPropagation)
     container.addEventListener('mousedown', flushPendingClipboard, true)
     container.addEventListener('keydown', flushPendingClipboard, true)
+    domCleanupRef.current.push(
+      () => container.removeEventListener('mousedown', flushPendingClipboard, true),
+      () => container.removeEventListener('keydown', flushPendingClipboard, true),
+    )
 
-    // Suppress browser's native context menu so right-click passes through to tmux
-    container.addEventListener('contextmenu', (e) => {
-      e.preventDefault()
-    })
-
-    // Fit terminal to container — retry a few times to handle layout settling
-    const doFit = () => {
-      try {
-        if (container.clientWidth > 0 && container.clientHeight > 0) {
-          fitAddon.fit()
-        }
-      } catch {}
-    }
-    doFit()
-    requestAnimationFrame(doFit)
-    setTimeout(doFit, 100)
-    setTimeout(doFit, 300)
-
-    // Get initial dimensions
-    const cols = term.cols || 80
-    const rows = term.rows || 24
-
-    // Connect WebSocket for this session
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    if (!hostId) throw new Error('terminal target is missing host identity')
-    const wsUrl = `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}&host=${encodeURIComponent(hostId)}`
-    const ws = new WebSocket(wsUrl)
-    ws.binaryType = 'arraybuffer'
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      // Stale connection — a newer connect() was called
-      if (activeConnId.current !== connId) {
-        ws.close()
+    const openSocket = () => {
+      if (
+        terminalGenerationRef.current !== terminalGeneration ||
+        termRef.current !== term ||
+        document.hidden
+      ) {
         return
       }
-      setTermConnected(true)
-    }
+      clearReconnectTimer()
+      closeSocket()
 
-    ws.onmessage = (evt) => {
-      if (evt.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(evt.data))
-      } else {
-        term.write(evt.data)
-      }
-    }
+      const generation = ++socketGenerationRef.current
+      const cols = term.cols || 80
+      const rows = term.rows || 24
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const url = `${protocol}//${window.location.host}/ws/session?name=${encodeURIComponent(sessionName)}&cols=${cols}&rows=${rows}&host=${encodeURIComponent(hostId)}`
+      const socket = new WebSocket(url)
+      socket.binaryType = 'arraybuffer'
+      wsRef.current = socket
+      setPtyState(reconnectAttemptsRef.current > 0 ? 'reconnecting' : 'connecting')
 
-    ws.onclose = () => {
-      // Only handle if this is still the active connection
-      if (activeConnId.current !== connId) return
-      // Don't flash the disconnect overlay if the page is just hidden
-      if (!document.hidden) {
-        setTermConnected(false)
-      }
-      // If hidden (e.g. iPad app switch), defer reconnect until page is visible again
-      if (document.hidden) {
-        const onVisible = () => {
-          if (activeConnId.current !== connId) return
-          document.removeEventListener('visibilitychange', onVisible)
-          window.removeEventListener('pageshow', onVisible)
-          if (containerRef.current && activeConnId.current === connId) {
-            connect(containerRef.current)
-          }
+      const isCurrent = () => (
+        terminalGenerationRef.current === terminalGeneration &&
+        socketGenerationRef.current === generation &&
+        activeTargetKeyRef.current === targetKey &&
+        wsRef.current === socket
+      )
+
+      socket.onopen = () => {
+        if (!isCurrent()) {
+          socket.close()
+          return
         }
-        document.addEventListener('visibilitychange', onVisible)
-        window.addEventListener('pageshow', onVisible)
-      } else if (containerRef.current) {
-        reconnectTimer.current = window.setTimeout(() => {
-          if (containerRef.current && activeConnId.current === connId) {
-            connect(containerRef.current)
+        reconnectAttemptsRef.current = 0
+        setPtyState('connected')
+      }
+
+      socket.onmessage = event => {
+        if (!isCurrent()) return
+        if (!followOutputRef.current) setHasNewOutput(true)
+        term.write(
+          event.data instanceof ArrayBuffer
+            ? new Uint8Array(event.data)
+            : String(event.data),
+        )
+      }
+
+      socket.onerror = () => {
+        if (isCurrent()) socket.close()
+      }
+
+      socket.onclose = () => {
+        if (!isCurrent()) return
+        wsRef.current = null
+        setPtyState('reconnecting')
+        if (document.hidden) return
+        const attempt = reconnectAttemptsRef.current++
+        const delay = Math.min(10_000, 1_000 * 2 ** Math.min(attempt, 4))
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null
+          if (
+            terminalGenerationRef.current === terminalGeneration &&
+            activeTargetKeyRef.current === targetKey
+          ) {
+            openSocket()
           }
-        }, 2000)
+        }, delay)
       }
     }
 
-    ws.onerror = (err) => {
-      console.error(`Terminal WS error: session ${sessionName}`, err)
+    openSocketRef.current = openSocket
+    const reconnectWhenVisible = () => {
+      if (
+        document.hidden ||
+        terminalGenerationRef.current !== terminalGeneration ||
+        activeTargetKeyRef.current !== targetKey
+      ) {
+        return
+      }
+      const socket = wsRef.current
+      if (
+        !socket ||
+        (socket.readyState !== WebSocket.OPEN &&
+          socket.readyState !== WebSocket.CONNECTING)
+      ) {
+        clearReconnectTimer()
+        openSocket()
+      }
     }
+    document.addEventListener('visibilitychange', reconnectWhenVisible)
+    window.addEventListener('pageshow', reconnectWhenVisible)
+    domCleanupRef.current.push(
+      () => document.removeEventListener('visibilitychange', reconnectWhenVisible),
+      () => window.removeEventListener('pageshow', reconnectWhenVisible),
+    )
 
-    // Forward keystrokes as binary messages
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data))
-      }
-    })
-
-    // Send resize events as JSON text messages
-    term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols, rows }))
-      }
-    })
-  }, [sessionName, hostId, cleanupWs, prefs.theme, prefs.terminal.font_size, prefs.terminal.font_family, prefs.terminal.scrollback, mobileInput])
+    openSocket()
+  }, [
+    cleanupTerminal,
+    clearReconnectTimer,
+    closeSocket,
+    flushPendingClipboard,
+    hostId,
+    mobileInput,
+    prefs.terminal.font_family,
+    prefs.terminal.font_size,
+    prefs.terminal.scrollback,
+    prefs.theme,
+    sessionName,
+    targetKey,
+    writeClipboard,
+  ])
 
   const disconnect = useCallback(() => {
-    // Invalidate any active connection
-    activeConnId.current = ++nextConnId
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current)
-      reconnectTimer.current = undefined
-    }
-    cleanupWs()
-    if (termRef.current) {
-      termRef.current.dispose()
-      termRef.current = null
-    }
-    containerRef.current = null
-  }, [cleanupWs])
+    cleanupTerminal()
+    setPtyState('disconnected')
+    setHasSelection(false)
+    setIsAtBottom(true)
+    setHasNewOutput(false)
+  }, [cleanupTerminal])
+
+  const reconnect = useCallback(() => {
+    clearReconnectTimer()
+    setPtyState('reconnecting')
+    openSocketRef.current?.()
+  }, [clearReconnectTimer])
 
   const fit = useCallback(() => {
-    if (fitAddonRef.current && containerRef.current) {
-      try {
-        if (containerRef.current.clientWidth > 0 && containerRef.current.clientHeight > 0) {
-          fitAddonRef.current.fit()
-        }
-      } catch {}
+    const fitAddon = fitAddonRef.current
+    const container = containerRef.current
+    if (!fitAddon || !container || container.clientWidth <= 0 || container.clientHeight <= 0) {
+      return
+    }
+    try {
+      fitAddon.fit()
+      if (followOutputRef.current) termRef.current?.scrollToBottom()
+    } catch {
+      // Ignore transient layout failures while a viewport is resizing.
     }
   }, [])
 
@@ -333,34 +535,188 @@ export function useTerminal(sessionName: string, hostId: string, mobileInput?: M
     termRef.current?.focus()
   }, [])
 
-  const sendInput = useCallback((data: string) => {
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false
-    ws.send(mobileInput ? mobileInput.encode(data) : new TextEncoder().encode(data))
-    return true
-  }, [mobileInput])
-
-  const copySelection = useCallback(async () => {
-    const generation = activeConnId.current
-    const selection = termRef.current?.getSelection() ?? ''
-    if (!selection) throw new Error('No terminal text is selected.')
-    if (!navigator.clipboard?.writeText) throw new Error('Clipboard write is unavailable.')
-    await navigator.clipboard.writeText(selection)
-    if (generation !== activeConnId.current) return
-    termRef.current?.clearSelection()
+  const scrollToBottom = useCallback(() => {
+    followOutputRef.current = true
+    termRef.current?.scrollToBottom()
+    setIsAtBottom(true)
+    setHasNewOutput(false)
     focus()
   }, [focus])
 
-  const pasteClipboard = useCallback(async () => {
-    const generation = activeConnId.current
-    if (!navigator.clipboard?.readText) throw new Error('Clipboard read is unavailable.')
-    const text = await navigator.clipboard.readText()
-    if (!text || generation !== activeConnId.current) return false
-    return sendInput(text)
-  }, [sendInput])
+  const adjustFontSize = useCallback((delta: number) => {
+    const term = termRef.current
+    if (!term) return
+    term.options.fontSize = Math.max(8, Math.min(32, (term.options.fontSize || 13) + delta))
+    fit()
+  }, [fit])
+
+  const copySelection = useCallback(async () => {
+    const term = termRef.current
+    const terminalGeneration = terminalGenerationRef.current
+    const selection = term?.getSelection() ?? ''
+    if (!selection) throw new Error('No Terminal text is selected.')
+    await writeClipboard(selection)
+    if (
+      terminalGenerationRef.current !== terminalGeneration ||
+      termRef.current !== term
+    ) {
+      throw new Error('The Terminal target changed after the text was copied.')
+    }
+    focus()
+    return true
+  }, [focus, writeClipboard])
+
+  const prepareClipboardPaste = useCallback(async (): Promise<PendingTerminalPaste> => {
+    const capture = captureConnection()
+    if (!capture) throw new TerminalInputError('not-connected', 'The Terminal is not connected.')
+    if (!navigator.clipboard?.readText) throw clipboardError('read')
+    let text: string
+    try {
+      text = await navigator.clipboard.readText()
+    } catch (error) {
+      throw clipboardError('read', error)
+    }
+    assertCurrentConnection(capture)
+    if (!text) throw new Error('The Clipboard is empty.')
+    return {
+      ...capture,
+      text,
+      multiline: isMultilineTerminalPaste(text),
+    }
+  }, [assertCurrentConnection, captureConnection])
+
+  const commitClipboardPaste = useCallback((paste: PendingTerminalPaste) => {
+    assertCurrentConnection(paste)
+    const bracketed = termRef.current?.modes.bracketedPasteMode ?? false
+    sendRawInput(encodeTerminalPaste(paste.text, bracketed), paste)
+    focus()
+    return true
+  }, [assertCurrentConnection, focus, sendRawInput])
+
+  const pasteClipboard = useCallback(async (): Promise<PendingTerminalPaste | null> => {
+    const paste = await prepareClipboardPaste()
+    if (paste.multiline) return paste
+    commitClipboardPaste(paste)
+    return null
+  }, [commitClipboardPaste, prepareClipboardPaste])
+
+  const selectAll = useCallback(() => {
+    termRef.current?.selectAll()
+    setHasSelection(Boolean(termRef.current?.hasSelection()))
+  }, [])
+
+  const ensureSearchAddon = useCallback(async (): Promise<SearchAddon> => {
+    if (searchAddonRef.current) return searchAddonRef.current
+    if (searchPromiseRef.current) return searchPromiseRef.current
+    const term = termRef.current
+    const terminalGeneration = terminalGenerationRef.current
+    if (!term) throw new Error('Open a Terminal before searching.')
+
+    setSearchState(state => ({ ...state, loading: true, error: '' }))
+    const promise = import('@xterm/addon-search')
+      .then(({ SearchAddon }) => {
+        if (
+          terminalGenerationRef.current !== terminalGeneration ||
+          termRef.current !== term
+        ) {
+          throw new Error('The Terminal target changed while Search was loading.')
+        }
+        const addon = new SearchAddon()
+        term.loadAddon(addon)
+        searchAddonRef.current = addon
+        searchResultDisposableRef.current = addon.onDidChangeResults(result => {
+          setSearchState(state => ({
+            ...state,
+            resultIndex: result.resultIndex,
+            resultCount: result.resultCount,
+          }))
+        })
+        setSearchState(state => ({ ...state, loading: false, loaded: true, error: '' }))
+        return addon
+      })
+      .catch(error => {
+        if (
+          terminalGenerationRef.current === terminalGeneration &&
+          termRef.current === term
+        ) {
+          setSearchState(state => ({
+            ...state,
+            loading: false,
+            loaded: false,
+            error: error instanceof Error ? error.message : 'Terminal Search failed to load.',
+          }))
+        }
+        throw error
+      })
+      .finally(() => {
+        if (searchPromiseRef.current === promise) searchPromiseRef.current = null
+      })
+    searchPromiseRef.current = promise
+    return promise
+  }, [])
+
+  const searchOptions = useCallback((caseSensitive: boolean): ISearchOptions => {
+    const theme = getXtermTheme(prefs.theme)
+    return {
+      caseSensitive,
+      incremental: true,
+      decorations: {
+        matchBackground: theme.brightBlack,
+        matchOverviewRuler: theme.blue,
+        activeMatchBackground: theme.yellow,
+        activeMatchColorOverviewRuler: theme.yellow,
+      },
+    }
+  }, [prefs.theme])
+
+  const findNext = useCallback(async (query: string, caseSensitive = false) => {
+    if (!query) {
+      searchAddonRef.current?.clearDecorations()
+      setSearchState(state => ({ ...state, resultIndex: -1, resultCount: 0 }))
+      return false
+    }
+    const addon = await ensureSearchAddon()
+    return addon.findNext(query, searchOptions(caseSensitive))
+  }, [ensureSearchAddon, searchOptions])
+
+  const findPrevious = useCallback(async (query: string, caseSensitive = false) => {
+    if (!query) return false
+    const addon = await ensureSearchAddon()
+    return addon.findPrevious(query, searchOptions(caseSensitive))
+  }, [ensureSearchAddon, searchOptions])
+
+  const clearSearch = useCallback(() => {
+    searchAddonRef.current?.clearDecorations()
+    setSearchState(state => ({ ...state, resultIndex: -1, resultCount: 0 }))
+  }, [])
 
   return {
-    termRef, connect, disconnect, fit, focus, termConnected,
-    sendInput, copySelection, pasteClipboard,
+    termRef,
+    connect,
+    disconnect,
+    reconnect,
+    fit,
+    focus,
+    ptyState,
+    termConnected: ptyState === 'connected',
+    hasSelection,
+    isAtBottom,
+    hasNewOutput,
+    scrollToBottom,
+    adjustFontSize,
+    sendInput,
+    sendRawInput,
+    sendCommand,
+    captureConnection,
+    copySelection,
+    prepareClipboardPaste,
+    commitClipboardPaste,
+    pasteClipboard,
+    selectAll,
+    searchState,
+    ensureSearchAddon,
+    findNext,
+    findPrevious,
+    clearSearch,
   }
 }
