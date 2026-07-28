@@ -18,6 +18,9 @@ import (
 func newNegotiationTestPeer(t *testing.T, timeout time.Duration) (*websocket.Conn, *Manager, *identity.Identity) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	hub, err := identity.Generate("hub")
 	if err != nil {
 		t.Fatal(err)

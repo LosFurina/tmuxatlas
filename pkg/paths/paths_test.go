@@ -9,6 +9,9 @@ import (
 func TestConfigDirMigratesLegacyDataWithoutDeletingSource(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 
 	legacyDir := filepath.Join(home, ".config", legacyAppName)
 	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
@@ -53,6 +56,9 @@ func TestConfigDirUsesXDGConfigHome(t *testing.T) {
 func TestConfigDirDoesNotOverwriteNewData(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 
 	legacyDir := filepath.Join(home, ".config", legacyAppName)
 	targetDir := filepath.Join(home, ".config", AppName)

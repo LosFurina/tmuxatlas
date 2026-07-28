@@ -31,6 +31,9 @@ func TestSessionCSRFIsBoundToSession(t *testing.T) {
 
 func TestBootstrapExpiryAndRotationLifecycle(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	manager, err := NewPasskeyManager("http://localhost:7654", NewSessionManager(time.Hour))
 	if err != nil {
 		t.Fatal(err)

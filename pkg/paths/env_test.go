@@ -9,6 +9,9 @@ import (
 
 func TestLoadEnvUsesConfigFileWithoutOverridingEnvironment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("TMUXATLAS_LISTEN", "127.0.0.1:9999")
 	previousPublicURL, hadPublicURL := os.LookupEnv("TMUXATLAS_PUBLIC_URL")
 	if err := os.Unsetenv("TMUXATLAS_PUBLIC_URL"); err != nil {
@@ -42,6 +45,9 @@ func TestLoadEnvUsesConfigFileWithoutOverridingEnvironment(t *testing.T) {
 
 func TestLoadEnvRejectsUnrelatedVariables(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	configDir, err := ConfigDir()
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +62,9 @@ func TestLoadEnvRejectsUnrelatedVariables(t *testing.T) {
 
 func TestSaveEnvValuePreservesOtherSettings(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	configDir, err := ConfigDir()
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,9 @@ import (
 
 func TestLocalRuntimeRevokeCommitsAndClosesActivePeer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	hub, _ := identity.Generate("hub")
 	agent, _ := identity.Generate("agent")
 	store, err := identity.NewPeerStore()

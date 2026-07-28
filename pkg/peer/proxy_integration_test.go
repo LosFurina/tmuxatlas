@@ -20,6 +20,9 @@ import (
 
 func TestPeerFlowsThroughReverseProxy(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 
 	hubIdentity, err := identity.Generate("hub")
 	if err != nil {

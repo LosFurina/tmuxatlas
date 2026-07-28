@@ -37,6 +37,9 @@ func newTestPasskeyStore(t *testing.T) *PasskeyStore {
 
 func TestBootstrapTokenIsRequiredAndConsumed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	manager, err := NewPasskeyManager(
 		"http://localhost:7654",
 		NewSessionManager(time.Hour),

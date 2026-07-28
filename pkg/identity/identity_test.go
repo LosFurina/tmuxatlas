@@ -105,6 +105,9 @@ func TestNormalizeName(t *testing.T) {
 func TestLoadRejectsMalformedIdentityWithoutRewriting(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	path := filepath.Join(home, ".config", "tmuxatlas", "identity.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)

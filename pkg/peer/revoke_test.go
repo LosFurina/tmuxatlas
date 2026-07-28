@@ -16,6 +16,9 @@ func newAuthorizedManager(t *testing.T) (*Manager, *identity.PeerStore, *identit
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	hub, err := identity.Generate("hub")
 	if err != nil {
 		t.Fatal(err)
