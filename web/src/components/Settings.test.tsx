@@ -62,6 +62,17 @@ afterEach(() => {
 })
 
 describe('Settings preference save feedback', () => {
+  it('renders Hub agent settings when the legacy endpoint returns an empty object', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+
+    render(settings(contextValue()))
+
+    expect(await screen.findByText('This Hub does not require local agent setup. Install and pair an Agent on each tmux host.')).toBeInTheDocument()
+  })
+
   it('announces saving and saved states and shows a success toast', async () => {
     const { rerender } = render(settings(contextValue()))
 

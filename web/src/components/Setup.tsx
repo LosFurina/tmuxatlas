@@ -4,19 +4,39 @@ import { usePreferences } from '../hooks/usePreferences'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { cn } from '../lib/utils'
 
-interface AgentStatus {
+export interface AgentStatus {
   name: string
   key: string
   installed: boolean
   configured: boolean
 }
 
-interface StatusResult {
+export interface StatusResult {
   agents: AgentStatus[]
   setup_command: string
 }
 
-export function AgentStatusList({ agents }: { agents: AgentStatus[] }) {
+export function normalizeAgentStatus(value: unknown): StatusResult | null {
+  if (!value || typeof value !== 'object') return null
+
+  const result = value as Partial<StatusResult>
+  const agents = Array.isArray(result.agents)
+    ? result.agents.filter((agent): agent is AgentStatus => (
+        Boolean(agent)
+        && typeof agent.name === 'string'
+        && typeof agent.key === 'string'
+        && typeof agent.installed === 'boolean'
+        && typeof agent.configured === 'boolean'
+      ))
+    : []
+
+  return {
+    agents,
+    setup_command: typeof result.setup_command === 'string' ? result.setup_command : '',
+  }
+}
+
+export function AgentStatusList({ agents = [] }: { agents?: AgentStatus[] }) {
   return (
     <div className="space-y-2">
       {agents.map(agent => (
@@ -73,7 +93,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
     try {
       const res = await fetch('/api/agent-status')
       if (res.ok) {
-        setStatus(await res.json())
+        setStatus(normalizeAgentStatus(await res.json()))
       }
     } catch {
       // ignore
@@ -114,7 +134,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
               <div className="space-y-5">
                 <AgentStatusList agents={status.agents} />
 
-                {!allConfigured && (
+                {!allConfigured && status.setup_command && (
                   <div className="space-y-2">
                     <p className="text-xs text-muted-foreground">
                       Run this command to configure hooks for all installed agents:
@@ -123,9 +143,15 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
                   </div>
                 )}
 
-                {allConfigured && (
+                {allConfigured && status.agents.length > 0 && (
                   <p className="text-xs text-success text-center">
                     All installed agents are configured.
+                  </p>
+                )}
+
+                {status.agents.length === 0 && (
+                  <p className="text-xs text-muted-foreground text-center">
+                    This Hub does not require local agent setup. Install and pair an Agent on each tmux host.
                   </p>
                 )}
 

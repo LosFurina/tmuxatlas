@@ -355,7 +355,10 @@ func Run(ctx context.Context, opts *Options) error {
 			r.Get("/agent-status", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if opts.Role == "hub" {
-					json.NewEncoder(w).Encode(map[string]any{})
+					json.NewEncoder(w).Encode(agentcheck.StatusResult{
+						Agents:       []agentcheck.AgentStatus{},
+						SetupCommand: "",
+					})
 					return
 				}
 				json.NewEncoder(w).Encode(agentcheck.CheckAgents())

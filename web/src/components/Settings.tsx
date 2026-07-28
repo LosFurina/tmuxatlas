@@ -3,7 +3,7 @@ import { usePreferences, type Preferences } from '../hooks/usePreferences'
 import { usePushNotifications } from '../hooks/usePushNotifications'
 import { themePresets, applyTheme } from '../theme'
 import { cn } from '../lib/utils'
-import { AgentStatusList, SetupCommandBox } from './Setup'
+import { AgentStatusList, normalizeAgentStatus, SetupCommandBox, type StatusResult } from './Setup'
 import { PasskeySettings } from './PasskeySettings'
 import type { PWAInstallState } from '../hooks/usePWAInstall'
 import { Button, ToastProvider, useToast } from './ui'
@@ -191,14 +191,14 @@ function SettingsContent({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
   const previousSaveState = useRef(saveState)
   const feedbackToast = useRef<string | null>(null)
   const [showCustomColors, setShowCustomColors] = useState(() => Object.keys(prefs.custom_theme || {}).length > 0)
-  const [agentStatus, setAgentStatus] = useState<{ agents: { name: string; key: string; installed: boolean; configured: boolean }[]; setup_command: string } | null>(null)
+  const [agentStatus, setAgentStatus] = useState<StatusResult | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
 
   const fetchAgentStatus = useCallback(async () => {
     setAgentLoading(true)
     try {
       const res = await fetch('/api/agent-status')
-      if (res.ok) setAgentStatus(await res.json())
+      if (res.ok) setAgentStatus(normalizeAgentStatus(await res.json()))
     } catch {}
     setAgentLoading(false)
   }, [])
@@ -580,7 +580,13 @@ function SettingsContent({ pushState, onPushSubscribe, onPushUnsubscribe, onLogo
             {agentStatus ? (
               <div className="flex flex-col gap-3">
                 <AgentStatusList agents={agentStatus.agents} />
-                <SetupCommandBox command={agentStatus.setup_command} />
+                {agentStatus.setup_command ? (
+                  <SetupCommandBox command={agentStatus.setup_command} />
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    This Hub does not require local agent setup. Install and pair an Agent on each tmux host.
+                  </p>
+                )}
                 <button
                   onClick={fetchAgentStatus}
                   disabled={agentLoading}
