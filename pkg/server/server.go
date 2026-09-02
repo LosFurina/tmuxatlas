@@ -281,9 +281,12 @@ func Run(ctx context.Context, opts *Options) error {
 	if err != nil {
 		return fmt.Errorf("public URL origin: %w", err)
 	}
-	hostValidation, err := hostMiddleware(publicURL)
-	if err != nil {
-		return fmt.Errorf("public URL host: %w", err)
+	var hostValidation func(http.Handler) http.Handler
+	if opts.AuthEnabled {
+		hostValidation, err = hostMiddleware(publicURL)
+		if err != nil {
+			return fmt.Errorf("public URL host: %w", err)
+		}
 	}
 	ingressPolicy, err := ingress.NewPolicy(ingress.DefaultConfig(), nil)
 	if err != nil {
@@ -302,7 +305,9 @@ func Run(ctx context.Context, opts *Options) error {
 	publicRouter.Use(chimiddleware.Recoverer)
 	publicRouter.Use(chimiddleware.StripSlashes)
 	publicRouter.Use(chimiddleware.RequestID)
-	publicRouter.Use(hostValidation)
+	if opts.AuthEnabled {
+		publicRouter.Use(hostValidation)
+	}
 	publicRouter.Use(httpguard.GlobalBodyLimitMiddleware(httpguard.GlobalBodyLimit))
 
 	// API routes
@@ -709,8 +714,8 @@ func Run(ctx context.Context, opts *Options) error {
 			ptyHandler.HandleSession(w, req)
 		})
 	} else {
-		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
-		publicRouter.With(originMiddleware, admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/events", hub.HandleEvents)
+		publicRouter.With(admissionMiddleware(ingressPolicy, ingress.CategoryWSTerminal)).Get("/ws/session", func(w http.ResponseWriter, req *http.Request) {
 			hostID := req.URL.Query().Get("host")
 			if opts.PeerMgr == nil || hostID == "" || !opts.PeerMgr.HasHost(hostID) {
 				http.Error(w, "explicit known host is required", http.StatusBadRequest)

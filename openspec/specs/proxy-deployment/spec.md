@@ -88,20 +88,20 @@ Binary-only installation SHALL not create configuration or a user service.
 - **WHEN** an operator selects binary-only
 - **THEN** the installer verifies and installs the executable without writing `.env` or starting a service
 
-### Requirement: Fail-closed unauthenticated mode
-TmuxAtlas SHALL allow `--no-auth` only when every configured listener address is loopback and the Public URL resolves syntactically to an explicitly allowed localhost or loopback origin. Startup MUST reject unauthenticated mode combined with an external origin, wildcard or non-loopback listener, or a reverse-proxy deployment configuration.
+### Requirement: Operator-controlled unauthenticated mode
+TmuxAtlas SHALL accept `--no-auth` with any syntactically valid listener address and Public URL. `--no-auth` disables application authentication and public Host/Origin gating for every reachable client; the operator is responsible for selecting the exposure boundary and deciding whether an external listener, private network, or trusted gateway is appropriate.
 
-#### Scenario: Loopback development mode
-- **WHEN** an operator enables `--no-auth` with a loopback listener and an allowed localhost or loopback Public URL
-- **THEN** TmuxAtlas starts the explicitly local unauthenticated development service
+#### Scenario: Loopback unauthenticated mode
+- **WHEN** an operator enables `--no-auth` with a loopback listener and Public URL
+- **THEN** TmuxAtlas starts without application authentication
 
 #### Scenario: External unauthenticated origin
-- **WHEN** `--no-auth` is combined with an external HTTPS Public URL
-- **THEN** startup fails with an actionable configuration error
+- **WHEN** an operator enables `--no-auth` with an external HTTPS Public URL
+- **THEN** TmuxAtlas starts without application authentication and leaves the exposure decision to the operator
 
 #### Scenario: Non-loopback unauthenticated listener
-- **WHEN** `--no-auth` is combined with a wildcard or non-loopback listen address
-- **THEN** startup fails rather than exposing unauthenticated terminal routes
+- **WHEN** an operator enables `--no-auth` with a wildcard or non-loopback listen address
+- **THEN** TmuxAtlas starts without application authentication and leaves the exposure decision to the operator
 
 ### Requirement: Configured public Host enforcement
 The public TCP Router SHALL accept a request only when its HTTP `Host` matches the normalized authority of `TMUXATLAS_PUBLIC_URL`, except for explicitly enumerated localhost or loopback aliases in local development. TmuxAtlas MUST NOT use an untrusted forwarded-host header to make this authorization decision.
@@ -119,7 +119,7 @@ The public TCP Router SHALL accept a request only when its HTTP `Host` matches t
 - **THEN** TmuxAtlas rejects it
 
 ### Requirement: Application-owned gateway security boundary
-TmuxAtlas SHALL enforce authentication, Host and Origin validation, request and connection limits, and protocol-specific cryptographic checks inside the application even when a trusted gateway is configured. Deployment documentation MUST describe gateway controls as additional defense rather than substitutes for application checks.
+When `--no-auth` is not enabled, TmuxAtlas SHALL enforce authentication, Host and Origin validation, request and connection limits, and protocol-specific cryptographic checks inside the application even when a trusted gateway is configured. Deployment documentation MUST describe gateway controls as additional defense rather than substitutes for application checks.
 
 #### Scenario: Permissive reverse proxy
 - **WHEN** a gateway forwards a request that violates an application ingress rule
@@ -127,4 +127,4 @@ TmuxAtlas SHALL enforce authentication, Host and Origin validation, request and 
 
 #### Scenario: Deployment guidance
 - **WHEN** an operator follows a supported Cloudflare Tunnel or Nginx deployment
-- **THEN** the documentation requires application authentication and preserved Host/Origin behavior and does not recommend public `--no-auth`
+- **THEN** the documentation describes the operator's responsibility for `--no-auth` and preserves Host/Origin behavior

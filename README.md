@@ -556,7 +556,7 @@ process environment variables take precedence. Start from
 | `TMUXATLAS_NO_CONTROL_MODE` | `false` | Disable tmux control mode |
 | `TMUXATLAS_SOCKET` | platform default | Private Unix socket used by notify/agent-setup |
 | `TMUXATLAS_DEPLOYMENT` | `native` | Runtime packaging; the official container sets `docker` |
-| `TMUXATLAS_NO_AUTH` | `false` | Disable authentication |
+| `TMUXATLAS_NO_AUTH` | `false` | Disable application authentication; ingress scope is an operator responsibility |
 | `TMUXATLAS_HUB` | | Hub URL for peer mode; use the gateway's trusted HTTPS URL |
 | `TMUXATLAS_LOCAL_ONLY` | `false` | Only show local sessions in the web UI |
 | `TMUXATLAS_PEER_OUTCOME_TTL` | `5m` | Agent-side correlated action result retention |
@@ -573,7 +573,7 @@ tmuxatlas server [flags]
       --discovery-interval int    Session discovery interval in seconds (default 2)
       --no-control-mode           Disable tmux control mode (use polling only)
       --socket string             Unix socket path (auto-detected if omitted)
-      --no-auth                   Disable authentication (loopback development only)
+      --no-auth                   Disable application authentication (operator-selected ingress)
       --hub string                Trusted hub URL for peer mode (e.g. https://tmuxatlas.example.com)
       --local-only                Only show local sessions in the web UI
 ```

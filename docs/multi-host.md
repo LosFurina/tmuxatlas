@@ -1,8 +1,8 @@
 # Multi-Host and Trusted Gateway Deployment
 
-TmuxAtlas can aggregate tmux sessions from several machines into one dashboard. The hub and peers use an application-level Ed25519 identity; public TLS belongs to a trusted gateway such as Cloudflare Tunnel or Nginx with an ACME certificate. Gateway filtering is additional defense: TmuxAtlas still enforces Passkey authentication, exact Host/Origin checks, resource limits, and Peer proofs.
+TmuxAtlas can aggregate tmux sessions from several machines into one dashboard. The hub and peers use an application-level Ed25519 identity; public TLS belongs to a trusted gateway such as Cloudflare Tunnel or Nginx with an ACME certificate. Gateway filtering is additional defense: when enabled, TmuxAtlas enforces Passkey authentication, exact Host/Origin checks, resource limits, and Peer proofs.
 
-`--no-auth` is accepted only for an explicitly loopback listener and a localhost/loopback Public URL. It cannot be used behind Cloudflare Tunnel, Nginx, or another public gateway.
+`--no-auth` is an operator-controlled deployment choice and is accepted with any valid listener and Public URL. It disables TmuxAtlas application authentication and public Host/Origin gating for every reachable client, allowing a single instance to serve both loopback and LAN origins. Use it only when the operator intentionally accepts that exposure and has provided an appropriate network boundary. It can be used behind Cloudflare Tunnel, Nginx, or another gateway when that is the operator's chosen trust model.
 
 Default application ingress limits are finite: 32 KiB request headers, 1 MiB
 global bodies, 4 KiB ordinary JSON, 16 KiB pairing JSON, 128 KiB

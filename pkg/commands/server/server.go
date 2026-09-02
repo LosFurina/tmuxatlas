@@ -90,18 +90,10 @@ func isLoopbackListen(address string) bool {
 	return strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
 }
 
-func validateNoAuthMode(noAuth bool, listenAddress string, publicURL *url.URL) error {
-	if !noAuth {
-		return nil
-	}
-	if !isLoopbackListen(listenAddress) {
-		return fmt.Errorf("--no-auth requires a loopback --listen address")
-	}
-	host := publicURL.Hostname()
-	ip := net.ParseIP(host)
-	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
-		return fmt.Errorf("--no-auth requires a localhost or loopback --public-url; external gateways require Passkey authentication")
-	}
+func validateNoAuthMode(_ bool, _ string, _ *url.URL) error {
+	// Authentication mode is an operator-selected deployment decision. Keep this
+	// hook so command validation has a stable extension point, but do not impose
+	// an application policy on the listener or public URL chosen by the operator.
 	return nil
 }
 
@@ -370,7 +362,7 @@ func serverFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:    "no-auth",
-			Usage:   "Disable authentication (not recommended for remote access)",
+			Usage:   "Disable application authentication (operator-selected ingress)",
 			Sources: cli.EnvVars("TMUXATLAS_NO_AUTH", "GUPPI_NO_AUTH"),
 		},
 		&cli.StringFlag{

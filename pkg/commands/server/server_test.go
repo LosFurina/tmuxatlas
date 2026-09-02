@@ -101,27 +101,16 @@ func TestLegacyRemovedTransportEnvironmentRejected(t *testing.T) {
 	}
 }
 
-func TestLoopbackListenDetection(t *testing.T) {
-	for _, address := range []string{"127.0.0.1:7654", "localhost:7654", "[::1]:7654"} {
-		if !isLoopbackListen(address) {
-			t.Errorf("%q should be loopback", address)
-		}
-	}
-	if isLoopbackListen("0.0.0.0:7654") {
-		t.Error("0.0.0.0 should not be loopback")
-	}
-}
-
-func TestValidateNoAuthMode(t *testing.T) {
+func TestValidateNoAuthModeDefersIngressChoiceToOperator(t *testing.T) {
 	local, _ := validatePublicURL("http://localhost:7654")
 	external, _ := validatePublicURL("https://tmuxatlas.example")
 	if err := validateNoAuthMode(true, "127.0.0.1:7654", local); err != nil {
 		t.Fatalf("local no-auth rejected: %v", err)
 	}
-	if err := validateNoAuthMode(true, "0.0.0.0:7654", local); err == nil {
-		t.Fatal("wildcard no-auth accepted")
+	if err := validateNoAuthMode(true, "0.0.0.0:7654", local); err != nil {
+		t.Fatalf("wildcard no-auth rejected: %v", err)
 	}
-	if err := validateNoAuthMode(true, "127.0.0.1:7654", external); err == nil {
-		t.Fatal("external no-auth origin accepted")
+	if err := validateNoAuthMode(true, "0.0.0.0:7654", external); err != nil {
+		t.Fatalf("external no-auth origin rejected: %v", err)
 	}
 }

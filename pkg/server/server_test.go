@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/LosFurina/tmuxatlas/pkg/activity"
 	"github.com/LosFurina/tmuxatlas/pkg/state"
 	"github.com/LosFurina/tmuxatlas/pkg/tmux"
@@ -83,6 +85,117 @@ func TestHTTPOriginDoesNotTouchLegacyTLSFiles(t *testing.T) {
 		if string(data) != "legacy-sentinel" {
 			t.Fatalf("legacy TLS file %s was modified", name)
 		}
+	}
+}
+
+func TestNoAuthAllowsAlternateLocalHostForLANPublicURL(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tmuxClient := &tmux.Client{}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, &Options{
+			ListenAddress:   address,
+			PublicURL:       "http://10.0.0.10:7654",
+			SocketPath:      filepath.Join(t.TempDir(), "tmuxatlas.sock"),
+			Client:          tmuxClient,
+			StateMgr:        state.NewManager(tmuxClient),
+			Tracker:         toolevents.NewTracker(),
+			ActivityTracker: activity.NewTracker(),
+			AuthEnabled:     false,
+		})
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Get("http://" + address + "/api/version")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("no-auth alternate host returned %s", resp.Status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no-auth server did not start: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no-auth server did not shut down")
+	}
+}
+
+func TestNoAuthAllowsWebSocketFromAlternateLocalOriginForLANPublicURL(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tempDir := t.TempDir()
+	tmuxClient := &tmux.Client{}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, &Options{
+			ListenAddress:   address,
+			PublicURL:       "http://10.0.0.10:7654",
+			SocketPath:      filepath.Join(tempDir, "tmuxatlas.sock"),
+			Client:          tmuxClient,
+			StateMgr:        state.NewManager(tmuxClient),
+			Tracker:         toolevents.NewTracker(),
+			ActivityTracker: activity.NewTracker(),
+			AuthEnabled:     false,
+		})
+	}()
+
+	endpoint := "ws://" + address + "/ws/events?schema=1"
+	headers := http.Header{"Origin": {"http://" + address}}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, response, err := websocket.DefaultDialer.Dial(endpoint, headers)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if response != nil {
+			response.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-result
+			t.Fatalf("no-auth WebSocket from alternate local origin failed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no-auth WebSocket server did not shut down")
 	}
 }
 
