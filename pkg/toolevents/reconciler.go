@@ -27,8 +27,9 @@ type PaneInfo struct {
 	PID     int    // pane process PID
 }
 
-// PaneListFunc returns all currently known panes.
-type PaneListFunc func() []PaneInfo
+// PaneListFunc returns a pane inventory. An error is not equivalent to an
+// authoritative empty inventory: Detector preserves its ownership state.
+type PaneListFunc func() ([]PaneInfo, error)
 
 // shells is the set of commands that indicate no agent is running
 var shells = map[string]bool{
@@ -89,6 +90,12 @@ func (r *Reconciler) reconcile() {
 	}
 
 	for _, evt := range events {
+		// Passive process detections are owned by Detector, which distinguishes
+		// an inventory error from an authoritative departure and emits exactly
+		// one completion. Reconciliation remains the hook-event safety net.
+		if evt.AutoDetected && passiveTools[evt.Tool] {
+			continue
+		}
 		if evt.Pane == "" {
 			continue
 		}

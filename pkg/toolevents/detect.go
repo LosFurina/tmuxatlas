@@ -46,9 +46,19 @@ var agentPatterns = []agentPattern{
 	{
 		tool: ToolOpenCode,
 		match: func(args []string) bool {
-			return matchBinaryName(args, "opencode")
+			return matchBinaryName(args, "opencode") || matchNodeScript(args, "opencode")
 		},
 	},
+	{tool: ToolAgy, match: func(args []string) bool { return matchBinaryName(args, "agy") }},
+}
+
+func detectFromArgs(args []string) (Tool, bool) {
+	for _, pat := range agentPatterns {
+		if pat.match(args) {
+			return pat.tool, true
+		}
+	}
+	return "", false
 }
 
 // matchBinaryName checks if the first arg (the binary) has the given base name.
@@ -78,8 +88,12 @@ func matchNodeScript(args []string, name string) bool {
 		if strings.HasPrefix(arg, "-") {
 			continue
 		}
-		if strings.Contains(strings.ToLower(arg), name) {
-			return true
+		clean := filepath.Clean(arg)
+		for _, component := range strings.Split(clean, string(filepath.Separator)) {
+			component = strings.TrimSuffix(strings.ToLower(component), ".js")
+			if component == name {
+				return true
+			}
 		}
 	}
 	return false
@@ -95,10 +109,8 @@ func DetectAgentInProcessTree(pid int) (Tool, bool) {
 		if len(args) == 0 {
 			continue
 		}
-		for _, pat := range agentPatterns {
-			if pat.match(args) {
-				return pat.tool, true
-			}
+		if tool, found := detectFromArgs(args); found {
+			return tool, true
 		}
 		// Also check grandchildren (shell → node → copilot)
 		grandchildren := getChildPIDs(cpid)
@@ -107,10 +119,8 @@ func DetectAgentInProcessTree(pid int) (Tool, bool) {
 			if len(gargs) == 0 {
 				continue
 			}
-			for _, pat := range agentPatterns {
-				if pat.match(gargs) {
-					return pat.tool, true
-				}
+			if tool, found := detectFromArgs(gargs); found {
+				return tool, true
 			}
 		}
 	}

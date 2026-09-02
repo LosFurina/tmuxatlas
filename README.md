@@ -10,7 +10,7 @@ get notified when it matters
 
 TmuxAtlas gives you a real-time web interface for your tmux sessions. It renders full terminal output in the browser using xterm.js backed by PTY connections, so you get the exact same view as your local terminal — borders, splits, colors, and all.
 
-It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode) running inside your sessions, surfacing their status so you know when an agent needs input, hits an error, or finishes a task.
+It also tracks AI coding agents (Claude Code, Codex, Copilot, OpenCode, and passive Agy detection) running inside your sessions, surfacing their status so you know when an agent needs input, hits an error, or finishes a task.
 
 ### Key features
 

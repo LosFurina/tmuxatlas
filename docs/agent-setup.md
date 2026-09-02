@@ -32,6 +32,14 @@ tmuxatlas agent-setup --block
 
 ## Supported Agents
 
+### Agy
+
+**Auto-detected; no hook is configured.** Settings shows Agy as
+`auto-detected` when its executable is found. Running panes are discovered
+separately by process-tree detection. Its waiting state is a TmuxAtlas silence
+heuristic, not an Agy lifecycle event contract. `agent-setup` does not create
+or change any Agy configuration.
+
 ### Claude Code
 
 **Auto-configured by `tmuxatlas agent-setup`.**
@@ -164,7 +172,7 @@ echo '{"hook_event_name":"Stop","last_assistant_message":"Done"}' | tmuxatlas no
 
 | Flag | Alias | Description |
 |------|-------|-------------|
-| `--tool` | `-t` | Agent name: `claude`, `codex`, `copilot`, `opencode` |
+| `--tool` | `-t` | Agent name: `claude`, `codex`, `copilot`, `opencode`, `agy` |
 | `--status` | `-s` | Status: `active`, `waiting`, `completed`, `error` |
 | `--message` | `-m` | Human-readable message |
 | `--stdin` | | Read hook event JSON from stdin |

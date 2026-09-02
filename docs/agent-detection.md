@@ -82,6 +82,16 @@ Each layer fills gaps left by the ones above it. An agent with hooks configured 
 
 **Process tree match:** Binary named `opencode`.
 
+### Agy
+
+**Detection:** Passive process-tree detection. Agy has no generated TmuxAtlas
+plugin or hook because no stable lifecycle callback contract is assumed.
+
+**Waiting detection:** Heuristic silence and prompt detection. Resumed pane
+output clears a synthetic waiting state while the process is still detected.
+
+**Process tree match:** Exact executable basename `agy`.
+
 ## How Each Layer Works
 
 ### Hook-Based Detection
@@ -106,7 +116,10 @@ The detector (`pkg/toolevents/detector.go`) runs every 5 seconds:
 
 ### Silence Monitor + Capture-Pane
 
-The silence monitor (`pkg/toolevents/silence.go`) watches panes with agents that lack native waiting hooks (currently Codex and Copilot):
+The silence monitor (`pkg/toolevents/silence.go`) watches detected non-Claude
+panes. It supplies waiting-state detection for agents without native waiting
+hooks (currently Codex, Copilot, and passive Agy); agents with native hooks use
+their hook events when available:
 1. Tracks last output time per pane via `%output` control mode notifications
 2. When a pane has been quiet for 10+ seconds, runs `tmux capture-pane -p` to get visible text
 3. Passes the last ~10 non-empty lines to `DetectPrompt()` which checks for:

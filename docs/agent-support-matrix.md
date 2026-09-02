@@ -22,21 +22,22 @@ Hub and Agents must be rolled back as a matching set.
 | **OpenCode** | **Full (Native)** | Plugin-based hooks | Native hooks | <1-2s |
 | **GitHub Copilot CLI** | **Partial (Hybrid)** | Hooks + process tree | Silence monitor + inactivity promoter | 10-30s |
 | **Codex** | **Partial (Hybrid)** | Hooks + process tree | Silence monitor + inactivity promoter | 10-30s |
+| **Agy** | **Passive (Heuristic)** | Process tree | Silence monitor | 10-20s |
 
 ## Feature Breakdown
 
-| Feature | Claude | OpenCode | Copilot | Codex |
-|---------|--------|----------|---------|-------|
-| Auto-detection (process tree) | Yes | Yes | Yes | Yes |
-| Hook-based activity tracking | Yes | Yes | Yes | Limited (turn-complete only) |
-| Native waiting state | Yes | Yes | No | No |
-| Tool use events | Yes | Yes | Yes | No |
-| Thinking/working events | Yes | Yes | Yes | No |
-| Permission prompt detection | Native | Native | Silence-based (~10s) | Silence-based (~10s) |
-| Completion events | Native | Native | Native | Native |
-| Error events | No | Native | Native | No |
-| Push notifications on waiting | Instant | Instant | Delayed (10-30s) | Delayed (10-30s) |
-| Auto setup (`tmuxatlas agent-setup`) | Yes | Yes | Yes | Yes |
+| Feature | Claude | OpenCode | Copilot | Codex | Agy |
+|---------|--------|----------|---------|-------|-----|
+| Auto-detection (process tree) | Yes | Yes | Yes | Yes | Yes |
+| Hook-based activity tracking | Yes | Yes | Yes | Limited (turn-complete only) | No |
+| Native waiting state | Yes | Yes | No | No | No |
+| Tool use events | Yes | Yes | Yes | No | No |
+| Thinking/working events | Yes | Yes | Yes | No | Heuristic |
+| Permission prompt detection | Native | Native | Silence-based (~10s) | Silence-based (~10s) | Silence-based (~10s) |
+| Completion events | Native | Native | Native | Native | Detector-owned |
+| Error events | No | Native | Native | No | No |
+| Push notifications on waiting | Instant | Instant | Delayed (10-30s) | Delayed (10-30s) | Delayed (10-20s) |
+| Auto setup (`tmuxatlas agent-setup`) | Yes | Yes | Yes | Yes | No |
 
 ## Detection Layers
 
@@ -62,3 +63,12 @@ Copilot and Codex lack native "waiting" hooks, so TmuxAtlas uses a hybrid approa
 - **Codex** only fires a single `agent-turn-complete` hook, so it has the least granular hook coverage. Waiting and activity detection rely heavily on process tree scanning and silence monitoring.
 
 For both, the silence monitor parses captured pane content looking for interactive prompt patterns, and the inactivity promoter generates synthetic waiting events after 30s of no activity.
+
+## Agy Passive Support
+
+Agy is intentionally process-detected only. TmuxAtlas writes no Agy plugin or
+configuration and does not claim a native Agy event contract. A detected Agy
+pane can receive a heuristic waiting state from the silence monitor; resumed
+output restores the synthetic active state, and detector-observed departure
+clears the Agy projection without clearing a replacement agent's state on the
+same pane.

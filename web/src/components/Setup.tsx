@@ -9,6 +9,8 @@ export interface AgentStatus {
   key: string
   installed: boolean
   configured: boolean
+  tracking_mode?: string
+  setup_required?: boolean
 }
 
 export interface StatusResult {
@@ -31,7 +33,10 @@ export function normalizeAgentStatus(value: unknown): StatusResult | null {
     : []
 
   return {
-    agents,
+    agents: agents.map(agent => {
+      const tracking_mode = agent.tracking_mode === 'passive' ? 'passive' : 'hook'
+      return { ...agent, tracking_mode, setup_required: tracking_mode === 'hook' }
+    }),
     setup_command: typeof result.setup_command === 'string' ? result.setup_command : '',
   }
 }
@@ -48,7 +53,7 @@ export function AgentStatusList({ agents = [] }: { agents?: AgentStatus[] }) {
             </span>
             {agent.installed && (
               <span className={agent.configured ? 'text-success' : 'text-warning'}>
-                {agent.configured ? 'configured' : 'needs setup'}
+                {agent.tracking_mode === 'passive' ? 'auto-detected' : agent.configured ? 'configured' : 'needs setup'}
               </span>
             )}
           </div>
@@ -105,7 +110,7 @@ export function Setup({ onComplete, fullPage = false }: { onComplete: () => void
     fetchStatus()
   }, [fetchStatus])
 
-  const allConfigured = status?.agents.every(a => !a.installed || a.configured) ?? false
+  const allConfigured = status?.agents.every(a => !a.installed || !a.setup_required || a.configured) ?? false
 
   const handleThemeChange = async (themeName: string) => {
     applyTheme(themeName, prefs.custom_theme)

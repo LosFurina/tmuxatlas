@@ -5,22 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
 
+	"github.com/LosFurina/tmuxatlas/pkg/agentcheck"
 	"github.com/LosFurina/tmuxatlas/pkg/common"
 )
 
 type agentConfig struct {
-	name     string
-	key      string
-	binary   string
-	detected bool
-	setup    func(tmuxatlasBin string, resilient bool, extraDirs []string) error
+	name          string
+	key           string
+	binary        string
+	detected      bool
+	setupRequired bool
+	setup         func(tmuxatlasBin string, resilient bool, extraDirs []string) error
 }
 
 func Execute(ctx context.Context, c *cli.Command) error {
@@ -47,28 +48,35 @@ func Execute(ctx context.Context, c *cli.Command) error {
 
 	agents := []agentConfig{
 		{
-			name:   "Claude Code",
-			key:    "claude",
-			binary: "claude",
-			setup:  setupClaude,
+			name:          "Claude Code",
+			key:           "claude",
+			binary:        "claude",
+			setup:         setupClaude,
+			setupRequired: true,
 		},
 		{
-			name:   "Codex",
-			key:    "codex",
-			binary: "codex",
-			setup:  setupCodex,
+			name:          "Codex",
+			key:           "codex",
+			binary:        "codex",
+			setup:         setupCodex,
+			setupRequired: true,
 		},
 		{
-			name:   "GitHub Copilot CLI",
-			key:    "copilot",
-			binary: "copilot",
-			setup:  setupCopilot,
+			name:          "GitHub Copilot CLI",
+			key:           "copilot",
+			binary:        "copilot",
+			setup:         setupCopilot,
+			setupRequired: true,
 		},
 		{
-			name:   "OpenCode",
-			key:    "opencode",
-			binary: "opencode",
-			setup:  setupOpenCode,
+			name:          "OpenCode",
+			key:           "opencode",
+			binary:        "opencode",
+			setup:         setupOpenCode,
+			setupRequired: true,
+		},
+		{
+			name: "Agy", key: "agy", binary: "agy", setupRequired: false,
 		},
 	}
 
@@ -76,8 +84,8 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	fmt.Println("Detecting installed AI agents...")
 	fmt.Println()
 	for i := range agents {
-		_, err := exec.LookPath(agents[i].binary)
-		agents[i].detected = err == nil
+		home, _ := os.UserHomeDir()
+		agents[i].detected = detectInstalled(agents[i].binary, home)
 		status := "not found"
 		if agents[i].detected {
 			status = "found"
@@ -92,6 +100,10 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	anySetup := false
 	for _, agent := range agents {
 		if !agent.detected {
+			continue
+		}
+		if !agent.setupRequired {
+			fmt.Printf("Agy is auto-detected; no hook configuration is written.\n")
 			continue
 		}
 		anySetup = true
@@ -113,13 +125,18 @@ func Execute(ctx context.Context, c *cli.Command) error {
 	}
 
 	if !anySetup {
-		fmt.Println("No supported agents found. Install one of: claude, codex, gh (copilot), opencode")
+		fmt.Println("No hook-configurable agents found. Install one of: claude, codex, gh (copilot), opencode")
 		return nil
 	}
 
 	fmt.Println()
 	fmt.Println("Agent hooks configured. They will notify TmuxAtlas through the local Unix socket.")
 	return nil
+}
+
+func detectInstalled(binary, home string) bool {
+	_, ok := agentcheck.FindExecutable(binary, home)
+	return ok
 }
 
 // setupClaude configures Claude Code hooks in ~/.claude/settings.json and any extra dirs
@@ -487,6 +504,7 @@ Supported agents:
   - Codex (codex)
   - GitHub Copilot CLI (gh copilot)
   - OpenCode (opencode)
+  - Agy (agy, auto-detected; no hook is written)
 
 Use --dry-run to preview changes without writing files.`,
 		Flags:  flags,

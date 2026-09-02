@@ -13,6 +13,26 @@ export interface ToolEvent {
   auto_detected?: boolean
 }
 
+export function applyToolEvent(previous: ToolEvent[], toolEvt: ToolEvent): ToolEvent[] {
+  const samePane = (event: ToolEvent) => (
+    event.session === toolEvt.session &&
+    event.window === toolEvt.window &&
+    (event.pane || '') === (toolEvt.pane || '') &&
+    (event.host || '') === (toolEvt.host || '')
+  )
+  const filtered = previous.filter(event => {
+    if (!samePane(event)) return true
+    // Completion belongs to a specific agent. A replacement hook may have
+    // already reported waiting on the same pane before passive Agy departure.
+    return toolEvt.status === 'completed' && event.tool !== toolEvt.tool
+  })
+  if (toolEvt.status === 'completed') return filtered
+  // Keep auto-detected active events so they count toward agent totals;
+  // hook-based active events are transient and should be cleared.
+  if (toolEvt.status === 'active' && !toolEvt.auto_detected) return filtered
+  return [...filtered, toolEvt]
+}
+
 export function useToolEvents() {
   const [events, setEvents] = useState<ToolEvent[]>([])
 
@@ -53,23 +73,7 @@ export function useToolEvents() {
       auto_detected: evt.auto_detected,
     }
 
-    setEvents(prev => {
-      // Remove existing event for same host/session/window/pane
-      // Normalize pane to handle undefined vs empty string
-      const filtered = prev.filter(
-        e => !(e.session === toolEvt.session && e.window === toolEvt.window && (e.pane || '') === (toolEvt.pane || '') && (e.host || '') === (toolEvt.host || ''))
-      )
-      // Don't persist completed events
-      if (toolEvt.status === 'completed') {
-        return filtered
-      }
-      // Keep auto-detected active events so they count toward agent totals;
-      // hook-based active events are transient and should be cleared
-      if (toolEvt.status === 'active' && !toolEvt.auto_detected) {
-        return filtered
-      }
-      return [...filtered, toolEvt]
-    })
+    setEvents(prev => applyToolEvent(prev, toolEvt))
   }, [])
 
   // Get events for a specific session (accepts composite key: "host/name" or "name")

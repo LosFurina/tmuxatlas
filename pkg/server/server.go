@@ -473,7 +473,7 @@ func Run(ctx context.Context, opts *Options) error {
 				}
 
 				agentCommands := map[string]bool{
-					"claude": true, "codex": true, "copilot": true, "opencode": true,
+					"claude": true, "codex": true, "copilot": true, "opencode": true, "agy": true,
 				}
 				totalWindows := 0
 				attachedSessions := 0

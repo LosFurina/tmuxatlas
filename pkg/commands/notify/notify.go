@@ -317,7 +317,7 @@ func init() {
 		&cli.StringFlag{
 			Name:     "tool",
 			Aliases:  []string{"t"},
-			Usage:    "tool name: claude, codex, copilot, opencode",
+			Usage:    "tool name: claude, codex, copilot, opencode, agy",
 			Required: true,
 		},
 		&cli.StringFlag{

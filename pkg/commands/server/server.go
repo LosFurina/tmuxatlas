@@ -147,10 +147,10 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 		}, 3*time.Second)
 		go reconciler.Run(ctx)
 
-		detector = toolevents.NewDetector(tracker, func() []toolevents.PaneInfo {
+		detector = toolevents.NewDetector(tracker, func() ([]toolevents.PaneInfo, error) {
 			panes, err := client.ListAllPanesDetailed()
 			if err != nil {
-				return nil
+				return nil, err
 			}
 			infos := make([]toolevents.PaneInfo, 0, len(panes))
 			for _, p := range panes {
@@ -158,7 +158,7 @@ func execute(ctx context.Context, c *cli.Command, pureHub bool) error {
 					PaneID: p.ID, Session: p.Session, Window: p.Window, PID: p.PID,
 				})
 			}
-			return infos
+			return infos, nil
 		}, 5*time.Second)
 		go detector.Run(ctx)
 		silenceMonitor = toolevents.NewSilenceMonitor(tracker, detector, client)

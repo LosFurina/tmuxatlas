@@ -66,10 +66,10 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 	}, 3*time.Second)
 	go reconciler.Run(ctx)
 
-	detector := toolevents.NewDetector(tracker, func() []toolevents.PaneInfo {
+	detector := toolevents.NewDetector(tracker, func() ([]toolevents.PaneInfo, error) {
 		panes, err := client.ListAllPanesDetailed()
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		infos := make([]toolevents.PaneInfo, 0, len(panes))
 		for _, pane := range panes {
@@ -77,7 +77,7 @@ func ExecuteAgent(ctx context.Context, c *cli.Command) error {
 				PaneID: pane.ID, Session: pane.Session, Window: pane.Window, PID: pane.PID,
 			})
 		}
-		return infos
+		return infos, nil
 	}, 5*time.Second)
 	go detector.Run(ctx)
 

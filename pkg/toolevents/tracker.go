@@ -16,6 +16,7 @@ const (
 	ToolCodex    Tool = "codex"
 	ToolCopilot  Tool = "copilot"
 	ToolOpenCode Tool = "opencode"
+	ToolAgy      Tool = "agy"
 )
 
 // Status represents the current state of an agent
@@ -104,14 +105,26 @@ func (t *Tracker) Record(evt *Event) {
 	}
 
 	t.mu.Lock()
-	if evt.Status == StatusCompleted || evt.Status == StatusActive {
-		// Completed and active events clear the tracking — active is transient
-		// and only serves to signal that waiting/error state should be dismissed
+	if evt.Status == StatusCompleted {
+		// A completed event can arrive after another agent has taken over the
+		// same pane. It only owns and clears its own projection; otherwise an
+		// Agy departure could erase an already-reported OpenCode waiting state.
+		current, existed := t.events[key]
+		if !existed || current.Tool == evt.Tool {
+			delete(t.events, key)
+		} else {
+			log.WithField("current_tool", current.Tool).Trace("tracker: preserving replacement tool event")
+		}
+		log.WithFields(logrus.Fields{
+			"action": "clear", "had_existing": existed, "tracked_count": len(t.events),
+		}).Trace("tracker: processed completed event")
+	} else if evt.Status == StatusActive {
+		// Active is transient and serves to dismiss a waiting/error state.
 		_, existed := t.events[key]
 		delete(t.events, key)
 		log.WithFields(logrus.Fields{
 			"action": "clear", "had_existing": existed, "tracked_count": len(t.events),
-		}).Trace("tracker: cleared event (active/completed)")
+		}).Trace("tracker: cleared event (active)")
 	} else {
 		t.events[key] = evt
 		log.WithField("tracked_count", len(t.events)).Trace("tracker: stored event (waiting/error)")

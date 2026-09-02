@@ -3,6 +3,7 @@ export const toolColors: Record<string, string> = {
     codex: '#66e088',
     copilot: '#66b3ff',
     opencode: '#bc8cff',
+    agy: '#f59e0b',
 }
 
 export const statusConfig: Record<string, { color: string; label: string; icon?: string; bg?: string }> = {

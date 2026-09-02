@@ -41,7 +41,7 @@ interface Stats {
   system?: SystemStats
 }
 
-const agentCommands = new Set(['claude', 'codex', 'copilot', 'opencode'])
+const agentCommands = new Set(['claude', 'codex', 'copilot', 'opencode', 'agy'])
 const shellCommands = new Set(['bash', 'zsh', 'fish', 'sh', 'dash', 'ksh', 'csh', 'tcsh', 'tmux', 'login'])
 
 function isSessionActive(session: Session): boolean {

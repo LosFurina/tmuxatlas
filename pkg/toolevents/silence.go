@@ -25,8 +25,9 @@ const maxSilenceChecks = 2
 // monitoredPane tracks state for a single monitored pane
 type monitoredPane struct {
 	tool          Tool
-	session       string    // tmux session name (captured at sync time)
-	window        int       // tmux window index (captured at sync time)
+	session       string // tmux session name (captured at sync time)
+	window        int    // tmux window index (captured at sync time)
+	generation    uint64
 	lastOutput    time.Time // last time we saw output for this pane
 	prompted      bool      // true if we already recorded a waiting event
 	silenceChecks int       // how many times we've checked since going silent
@@ -68,14 +69,22 @@ func (sm *SilenceMonitor) SetHost(id, name string) {
 // Called from the control mode %output handler.
 func (sm *SilenceMonitor) RecordOutput(paneID string) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	var resume *monitoredPane
 	if mp, ok := sm.monitored[paneID]; ok {
 		mp.lastOutput = time.Now()
 		if mp.prompted || mp.silenceChecks > 0 {
 			sm.log.WithField("pane", paneID).Trace("output resumed, resetting silence state")
+			if mp.prompted && passiveTools[mp.tool] {
+				copy := *mp
+				resume = &copy
+			}
 			mp.prompted = false
 			mp.silenceChecks = 0
 		}
+	}
+	sm.mu.Unlock()
+	if resume != nil {
+		sm.detector.RecordPassiveActive(paneID, resume.tool, resume.generation, sm.hostID, sm.hostName)
 	}
 }
 
@@ -118,11 +127,19 @@ func (sm *SilenceMonitor) sync() {
 		if tool == ToolClaude {
 			continue // Claude has native waiting hooks
 		}
-		if _, already := sm.monitored[paneID]; already {
+		info, generation, ok := sm.detector.PassiveToken(paneID, tool)
+		if !ok {
 			continue
 		}
-
-		info := sm.detector.PaneInfo(paneID)
+		if mp, already := sm.monitored[paneID]; already {
+			if mp.tool == tool && mp.generation == generation {
+				continue
+			}
+			// The pane changed tools or was redetected. Replace the monitor
+			// state so a waiting projection and resume token from the prior
+			// generation cannot leak into the new lifecycle.
+			delete(sm.monitored, paneID)
+		}
 
 		sm.log.WithFields(logrus.Fields{
 			"pane":    paneID,
@@ -135,6 +152,7 @@ func (sm *SilenceMonitor) sync() {
 			tool:       tool,
 			session:    info.Session,
 			window:     info.Window,
+			generation: generation,
 			lastOutput: time.Now(), // assume active when first detected
 		}
 	}
