@@ -38,6 +38,8 @@ const terminal = {
   findNext: vi.fn<() => Promise<boolean>>(),
   findPrevious: vi.fn<() => Promise<boolean>>(),
   clearSearch: vi.fn(),
+  setForwardWheel: vi.fn(),
+  setMouseTracking: vi.fn(),
 }
 
 vi.mock('../hooks/useTerminal', () => ({

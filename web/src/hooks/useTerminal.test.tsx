@@ -573,21 +573,6 @@ describe('useTerminal lifecycle and guarded input', () => {
   })
 
 
-  it('bypasses wheel forwarding when mouse tracking mode is off', () => {
-    const container = terminalContainer()
-    const { result } = renderHook(() => useTerminal('work', 'host-a'))
-    act(() => {
-      result.current.connect(container)
-      FakeWebSocket.sockets[0].open()
-    })
-
-    const term = xtermState.terminals[0]
-    term.modes = { mouseTrackingMode: 'none' }
-
-    const before = FakeWebSocket.sockets[0].send.mock.calls.length
-    act(() => term.emitWheel(-3))
-    expect(FakeWebSocket.sockets[0].send.mock.calls.length).toBe(before)
-  })
 
   it('isolates captures for same-name sessions on different hosts', () => {
     const { result, rerender } = renderHook(

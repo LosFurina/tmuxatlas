@@ -108,6 +108,7 @@ export function useTerminal(
   const [searchState, setSearchState] = useState<TerminalSearchState>(initialSearchState)
   const wheelPartialScrollRef = useRef(0)
   const handledWheelEventsRef = useRef(new WeakSet<WheelEvent>())
+  const forwardWheelRef = useRef(true)
 
   const resolveWheelSteps = useCallback((term: Terminal, event: WheelEvent) => {
     if (event.deltaY === 0 || event.shiftKey) return 0
@@ -141,9 +142,8 @@ export function useTerminal(
   const forwardWheelToTmux = useCallback((term: Terminal, container: HTMLElement, event: WheelEvent) => {
     if (handledWheelEventsRef.current.has(event)) return false
 
-    // When mouse tracking is off (selection mode), let xterm scroll locally
-    if (term.modes.mouseTrackingMode === 'none') return false
-
+    // When wheel forwarding is disabled (selection mode), let xterm scroll locally.
+    if (!forwardWheelRef.current) return true
 
     const steps = resolveWheelSteps(term, event)
     const socket = wsRef.current
@@ -161,6 +161,23 @@ export function useTerminal(
     event.stopPropagation()
     return false
   }, [encodeSgrWheel, resolveWheelSteps])
+
+  const setForwardWheel = useCallback((enabled: boolean) => {
+    forwardWheelRef.current = enabled
+  }, [])
+
+  const setMouseTracking = useCallback((on: boolean) => {
+    const term = termRef.current
+    if (!term) return
+    if (on) {
+      // Restore xterm mouse tracking for tmux SGR forwarding
+      // 1003 = ANY (button press/release/move), 1006 = SGR encoding
+      term.write('[?1003h[?1006h')
+    } else {
+      // Disable all mouse tracking modes so xterm handles mouse locally
+      term.write('[?1000l[?1002l[?1003l[?1006l')
+    }
+  }, [])
 
   const clearReconnectTimer = useCallback(() => {
     if (reconnectTimerRef.current !== null) {
@@ -360,6 +377,7 @@ export function useTerminal(
     term.attachCustomWheelEventHandler(event => forwardWheelToTmux(term, container, event))
 
     const captureWheel = (event: WheelEvent) => {
+      if (!forwardWheelRef.current) return // selection mode — let event through to xterm
       forwardWheelToTmux(term, container, event)
     }
     container.addEventListener('wheel', captureWheel, { capture: true, passive: false })
@@ -799,5 +817,7 @@ export function useTerminal(
     findNext,
     findPrevious,
     clearSearch,
+    setForwardWheel,
+    setMouseTracking,
   }
 }

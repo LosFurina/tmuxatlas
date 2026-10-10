@@ -128,6 +128,8 @@ export function Terminal({
     findNext,
     findPrevious,
     clearSearch,
+    setForwardWheel,
+    setMouseTracking,
   } = useTerminal(sessionName, hostId, input)
 
   const workspaceConnection = connectionState ?? deriveTerminalWorkspaceConnection({
@@ -170,7 +172,13 @@ export function Terminal({
     clearSearch()
     setSelectionMode(false)
     setShiftHeld(false)
-  }, [clearSearch, hostId, input, sessionName])
+    setForwardWheel(true)
+    setMouseTracking(true)
+  }, [clearSearch, hostId, input, sessionName, setForwardWheel, setMouseTracking])
+
+  useEffect(() => {
+    setForwardWheel(!selectionMode)
+  }, [selectionMode, setForwardWheel])
 
   const cycleModifier = (modifier: ModifierName) => {
     input.cycle(modifier)
@@ -436,15 +444,22 @@ export function Terminal({
   }, [fit, focus, fullscreen, zenMode])
 
   const onToggleSelectionMode = useCallback(() => {
-    setSelectionMode(current => !current)
-    postRuntimeMutation('/api/session/mouse', {
-      host_id: hostId,
-      session: sessionName,
-      mouse: selectionMode ? 'on' : 'off',
-    }).catch(err => {
-      console.error('Failed to toggle mouse mode:', err)
+    setSelectionMode(current => {
+      const next = !current
+      // Synchronize xterm's local mouse handling with tmux.
+      // off → selection mode → xterm processes mouse locally (native selection)
+      // on  → mouse mode → xterm forwards SGR mouse sequences to tmux
+      setMouseTracking(!next)
+      postRuntimeMutation('/api/session/mouse', {
+        host_id: hostId,
+        session: sessionName,
+        mouse: next ? 'off' : 'on',
+      }).catch(err => {
+        console.error('Failed to toggle mouse mode:', err)
+      })
+      return next
     })
-  }, [hostId, sessionName, selectionMode])
+  }, [hostId, sessionName, setMouseTracking])
 
   const showMenuAtButton = (button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect()
