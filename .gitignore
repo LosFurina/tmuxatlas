@@ -19,3 +19,7 @@ node_modules
 logo.jpg
 build.sh
 notes/
+
+# worktrees
+.worktrees/
+worktrees/

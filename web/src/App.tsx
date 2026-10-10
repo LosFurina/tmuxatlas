@@ -348,6 +348,19 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     }
   }, [navigateTo, refresh, refocusTerminal, workspacePreferences])
 
+  const handleNewWindow = useCallback(async (sessionKey: string) => {
+    const { host, name } = parseSessionKey(sessionKey)
+    try {
+      await postRuntimeMutation('/api/session/new-window', {
+        host_id: host, session: name,
+      })
+      await refresh()
+    } catch (err) {
+      console.error('Failed to create window:', err)
+      setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
+    }
+  }, [refresh])
+
   const toggleFullscreen = useCallback(() => {
     setTerminalFullscreen(f => !f)
     setTimeout(() => refocusTerminal(), 0)
@@ -565,6 +578,10 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
               }
             }}
             onRuntimeError={setRuntimeError}
+            onWindowSelect={(sessionKey: string, windowIndex: number) => {
+              void jumpToSession(sessionKey, windowIndex)
+            }}
+            onNewWindow={handleNewWindow}
             mobileOpen={mobileSidebarOpen}
             onMobileClose={() => setMobileSidebarOpen(false)}
           />

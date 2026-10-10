@@ -16,12 +16,12 @@ services:
       TMUXATLAS_PUBLIC_URL: ${TMUXATLAS_PUBLIC_URL:?Set TMUXATLAS_PUBLIC_URL to the final HTTPS URL}
       TMUXATLAS_SESSION_TTL: ${TMUXATLAS_SESSION_TTL:-168h}
       TMUXATLAS_LISTEN: 0.0.0.0:7654
-      TMUXATLAS_SOCKET: /run/tmuxatlas/tmuxatlas.sock
+      TMUXATLAS_SOCKET: /var/lib/tmuxatlas/run/tmuxatlas.sock
       TMUXATLAS_DEPLOYMENT: docker
       HOME: /var/lib/tmuxatlas/home
       XDG_CONFIG_HOME: /var/lib/tmuxatlas/config
       XDG_DATA_HOME: /var/lib/tmuxatlas/data
-      XDG_RUNTIME_DIR: /run/tmuxatlas
+      XDG_RUNTIME_DIR: /var/lib/tmuxatlas/run
     volumes:
       - tmuxatlas-data:/var/lib/tmuxatlas
     tmpfs:

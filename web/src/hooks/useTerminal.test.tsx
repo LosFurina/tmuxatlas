@@ -1,5 +1,5 @@
-import { act, renderHook } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, renderHook } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MobileTerminalInput } from '../lib/mobileTerminalInput'
 import { terminalTargetKey } from '../lib/terminalInput'
 import { useTerminal } from './useTerminal'
@@ -10,6 +10,16 @@ const xtermState = vi.hoisted(() => ({
   ensureTerminalFont: vi.fn(),
   searchConstructError: null as Error | null,
 }))
+
+function decodeFrame(frame: unknown) {
+  if (frame instanceof Uint8Array) return new TextDecoder().decode(frame)
+  if (ArrayBuffer.isView(frame)) {
+    return new TextDecoder().decode(new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength))
+  }
+  if (frame instanceof ArrayBuffer) return new TextDecoder().decode(frame)
+  if (typeof frame === 'string') return frame
+  return ''
+}
 
 vi.mock('../fonts', () => ({
   ensureTerminalFont: xtermState.ensureTerminalFont,
@@ -83,8 +93,12 @@ vi.mock('@xterm/xterm', () => {
     disposed = false
     focused = false
     selection = ''
+    element: HTMLElement | null = null
+    viewport: HTMLElement | null = null
     scrollBottomCalls = 0
     customKeyHandler?: (event: KeyboardEvent) => boolean
+    customWheelHandler?: (event: WheelEvent) => boolean
+    private wheelPartial = 0
     private selectionListeners = new Set<Listener<void>>()
     private scrollListeners = new Set<Listener<number>>()
     private dataListeners = new Set<Listener<string>>()
@@ -98,7 +112,43 @@ vi.mock('@xterm/xterm', () => {
     loadAddon(addon: { activate?: (terminal: FakeTerminal) => void }) {
       addon.activate?.(this)
     }
-    open() {}
+    open(element?: HTMLElement) {
+      this.element = element ?? document.createElement('div')
+      const viewport = document.createElement('div')
+      viewport.className = 'xterm-viewport'
+      let scrollTop = 0
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 500 })
+      Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 })
+      Object.defineProperty(viewport, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value
+          this.buffer.active.viewportY = Math.max(0, Math.min(this.buffer.active.baseY, Math.round(scrollTop / 20)))
+          this.scrollListeners.forEach(listener => listener(this.buffer.active.viewportY))
+        },
+      })
+      this.viewport = viewport
+      this.element.appendChild(viewport)
+      this.element.addEventListener('wheel', (event) => {
+        if (this.customWheelHandler?.(event) === false) return
+        if (event.deltaY === 0) return
+        let amount = event.deltaY
+        if (event.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+          const rowHeight = 20
+          amount /= rowHeight
+          this.wheelPartial += amount
+          amount = Math.trunc(this.wheelPartial)
+          this.wheelPartial -= amount
+        } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+          amount *= this.rows
+        }
+        if (amount === 0 || !this.viewport) return
+        const current = Number((this.viewport as any).scrollTop ?? 0)
+        ;(this.viewport as any).scrollTop = Math.max(0, current + amount * 20)
+        event.preventDefault()
+      })
+    }
     dispose() {
       this.disposed = true
       this.selectionListeners.clear()
@@ -112,6 +162,9 @@ vi.mock('@xterm/xterm', () => {
     write(_data: unknown) {}
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) {
       this.customKeyHandler = handler
+    }
+    attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+      this.customWheelHandler = handler
     }
     onSelectionChange(listener: Listener<void>) {
       this.selectionListeners.add(listener)
@@ -143,6 +196,17 @@ vi.mock('@xterm/xterm', () => {
       this.selection = 'all'
       this.selectionListeners.forEach(listener => listener())
     }
+    scrollLines(lines: number) {
+      this.buffer.active.viewportY = Math.max(
+        0,
+        Math.min(this.buffer.active.baseY, this.buffer.active.viewportY + lines),
+      )
+      if (this.viewport) {
+        const current = Number((this.viewport as any).scrollTop ?? 0)
+        ;(this.viewport as any).scrollTop = Math.max(0, current + lines * 20)
+      }
+      this.scrollListeners.forEach(listener => listener(this.buffer.active.viewportY))
+    }
     scrollToBottom() {
       this.buffer.active.viewportY = this.buffer.active.baseY
       this.scrollBottomCalls++
@@ -151,6 +215,21 @@ vi.mock('@xterm/xterm', () => {
     emitScroll(value: number) {
       this.buffer.active.viewportY = value
       this.scrollListeners.forEach(listener => listener(value))
+    }
+    emitWheel(deltaY: number, deltaMode = 1) {
+      const event = new WheelEvent('wheel', {
+        deltaY,
+        deltaMode,
+        clientX: 1,
+        clientY: 1,
+        bubbles: true,
+        cancelable: true,
+      })
+      if (this.customWheelHandler) {
+        this.customWheelHandler(event)
+        return
+      }
+      this.element?.dispatchEvent(event)
     }
   }
   return { Terminal: FakeTerminal }
@@ -218,6 +297,12 @@ beforeEach(() => {
     return 1
   })
   vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+})
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('useTerminal lifecycle and guarded input', () => {
@@ -425,6 +510,69 @@ describe('useTerminal lifecycle and guarded input', () => {
     expect(result.current.isAtBottom).toBe(true)
     expect(result.current.hasNewOutput).toBe(false)
   })
+
+  it('routes wheel input into tmux mouse scrollback sequences', () => {
+    const container = terminalContainer()
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    act(() => {
+      result.current.connect(container)
+      FakeWebSocket.sockets[0].open()
+    })
+
+    const term = xtermState.terminals[0]
+    expect(term.customWheelHandler).toBeTypeOf('function')
+    const before = FakeWebSocket.sockets[0].send.mock.calls.length
+    act(() => term.emitWheel(-3))
+    expect(FakeWebSocket.sockets[0].send.mock.calls.length).toBe(before + 1)
+    const last = FakeWebSocket.sockets[0].send.mock.calls[before][0]
+    expect(decodeFrame(last)).toBe('\x1b[<64;1;1M\x1b[<64;1;1M\x1b[<64;1;1M')
+  })
+
+  it('routes wheel events captured by the terminal container into tmux mouse scrollback sequences', () => {
+    const container = terminalContainer()
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    act(() => {
+      result.current.connect(container)
+      FakeWebSocket.sockets[0].open()
+    })
+
+    xtermState.terminals[0].customWheelHandler = undefined
+    const before = FakeWebSocket.sockets[0].send.mock.calls.length
+    const event = new WheelEvent('wheel', {
+      deltaY: -2,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      clientX: 1,
+      clientY: 1,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => container.dispatchEvent(event))
+    expect(FakeWebSocket.sockets[0].send.mock.calls.length).toBe(before + 1)
+    const last = FakeWebSocket.sockets[0].send.mock.calls[before][0]
+    expect(decodeFrame(last)).toBe('\x1b[<64;1;1M\x1b[<64;1;1M')
+  })
+
+  it('accumulates pixel wheel deltas before sending tmux scrollback sequences', () => {
+    const { result } = renderHook(() => useTerminal('work', 'host-a'))
+    act(() => {
+      result.current.connect(terminalContainer())
+      FakeWebSocket.sockets[0].open()
+    })
+
+    const term = xtermState.terminals[0]
+    expect(term.customWheelHandler).toBeTypeOf('function')
+    const before = FakeWebSocket.sockets[0].send.mock.calls.length
+    act(() => {
+      for (let index = 0; index < 20; index++) {
+        term.emitWheel(-1, WheelEvent.DOM_DELTA_PIXEL)
+      }
+    })
+    expect(FakeWebSocket.sockets[0].send.mock.calls.length).toBeGreaterThan(before)
+    const last = FakeWebSocket.sockets[0].send.mock.calls[FakeWebSocket.sockets[0].send.mock.calls.length - 1][0]
+    expect(decodeFrame(last)).toBe('\x1b[<64;1;1M')
+  })
+
+
 
   it('isolates captures for same-name sessions on different hosts', () => {
     const { result, rerender } = renderHook(

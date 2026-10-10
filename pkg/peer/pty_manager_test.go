@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 
 	"github.com/LosFurina/tmuxatlas/pkg/identity"
 )
@@ -150,5 +152,39 @@ func TestAgentPTYRejectsStaleGenerationBeforeCreatingDevice(t *testing.T) {
 	})
 	if called {
 		t.Fatal("stale generation created a PTY device")
+	}
+}
+
+func TestPTYInputDiagnosticLogsOnlyEnabledWheelPayloads(t *testing.T) {
+	logger := logrus.StandardLogger()
+	previousOutput := logger.Out
+	previousFormatter := logger.Formatter
+	previousLevel := logger.Level
+	t.Cleanup(func() {
+		logger.SetOutput(previousOutput)
+		logger.SetFormatter(previousFormatter)
+		logger.SetLevel(previousLevel)
+	})
+
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	logger.SetLevel(logrus.InfoLevel)
+
+	t.Setenv("TMUXATLAS_DEBUG_PTY_INPUT", "")
+	logPTYInputDiagnostic("work", []byte("\x1b[<64;1;1M"))
+	if output.Len() != 0 {
+		t.Fatalf("diagnostic logged while disabled: %q", output.String())
+	}
+
+	t.Setenv("TMUXATLAS_DEBUG_PTY_INPUT", "1")
+	logPTYInputDiagnostic("work", []byte("typed"))
+	if output.Len() != 0 {
+		t.Fatalf("diagnostic logged non-wheel input: %q", output.String())
+	}
+
+	logPTYInputDiagnostic("work", []byte("\x1b[<64;1;1M"))
+	if !strings.Contains(output.String(), "PTY input contains SGR mouse wheel sequence") {
+		t.Fatalf("diagnostic did not log wheel input: %q", output.String())
 	}
 }

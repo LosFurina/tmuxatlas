@@ -3,7 +3,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Host } from '../hooks/useHosts'
-import type { Session } from '../hooks/useSessions'
+import type { Session, Window } from '../hooks/useSessions'
 import type { ToolEvent } from '../hooks/useToolEvents'
 import { postRuntimeMutation } from '../lib/runtimeApi'
 import { renderStrict } from '../test/render'
@@ -28,6 +28,14 @@ const events: ToolEvent[] = [
   { host: 'host-b', session: 'work', tool: 'claude', status: 'error', window: 0, timestamp: '2026-01-03T00:00:00Z' },
 ]
 const workspace = buildWorkspaceViewModel(sessions, events, new Map(), hosts)
+
+
+function windowsForSession(): Window[] {
+  return [
+    { id: '@0', session_id: '$1', name: 'editor', index: 0, active: true, layout: '', panes: [] },
+    { id: '@1', session_id: '$1', name: 'logs', index: 1, active: false, layout: '', panes: [] },
+  ]
+}
 
 function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) {
   const props: ComponentProps<typeof Sidebar> = {
@@ -210,4 +218,121 @@ describe('state-driven Sidebar', () => {
     fireEvent.keyDown(screen.getByTestId('early-drawer-trigger'), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Workspace sessions' })).not.toBeInTheDocument())
   })
+
+  it('expands and collapses window sub-list on chevron click', async () => {
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [],
+      new Map(),
+      hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, selectedSession: 'host-a/work' })
+
+    expect(screen.queryByRole('button', { name: /Window 0:/ })).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show windows for work' }))
+    expect(screen.getByRole('button', { name: /Window 0:/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Window 1:/ })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Hide windows for work' }))
+    expect(screen.queryByRole('button', { name: /Window 0:/ })).not.toBeInTheDocument()
+  })
+
+  it('highlights the active window', async () => {
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [],
+      new Map(),
+      hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, selectedSession: 'host-a/work' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show windows for work' }))
+
+    const activeBtn = screen.getByRole('button', { name: 'Window 0: editor, active' })
+    expect(activeBtn).toHaveClass('text-primary')
+
+    const inactiveBtn = screen.getByRole('button', { name: 'Window 1: logs, inactive' })
+    expect(inactiveBtn).not.toHaveClass('text-primary')
+  })
+
+  it('calls onWindowSelect with session key and window index on window click', async () => {
+    const onWindowSelect = vi.fn()
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [],
+      new Map(),
+      hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, selectedSession: 'host-a/work', onWindowSelect })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show windows for work' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Window 1: logs, inactive' }))
+
+    expect(onWindowSelect).toHaveBeenCalledWith('host-a/work', 1)
+  })
+
+  it('hides window sub-list when sidebar is collapsed', () => {
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [],
+      new Map(),
+      hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, collapsed: true })
+
+    expect(screen.queryByRole('button', { name: 'Show windows for work' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Window 0:/ })).not.toBeInTheDocument()
+  })
+
+
+  it('calls onNewWindow when "+" button is clicked', async () => {
+    const onNewWindow = vi.fn().mockResolvedValue(undefined)
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [], new Map(), hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, onNewWindow })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create new window in work' }))
+    expect(onNewWindow).toHaveBeenCalledWith('host-a/work')
+  })
+
+  it('shows "New Window" in right-click context menu when onNewWindow provided', async () => {
+    const onNewWindow = vi.fn().mockResolvedValue(undefined)
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [], new Map(), hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, onNewWindow })
+
+    const sessionButton = screen.getByRole('button', { name: /Open Duplicate Host session work/ })
+    fireEvent.contextMenu(sessionButton)
+    const menuItem = screen.getByRole('menuitem', { name: 'New Window' })
+    expect(menuItem).toBeInTheDocument()
+    await userEvent.click(menuItem)
+    expect(onNewWindow).toHaveBeenCalledWith('host-a/work')
+  })
+
+  it('hides "+" button when sidebar is collapsed', () => {
+    const onNewWindow = vi.fn().mockResolvedValue(undefined)
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [], new Map(), hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws, collapsed: true, onNewWindow })
+
+    expect(screen.queryByRole('button', { name: 'Create new window in work' })).not.toBeInTheDocument()
+  })
+
+  it('does not show "+" button when onNewWindow prop is omitted', () => {
+    const ws = buildWorkspaceViewModel(
+      [{ ...session('host-a', 'work'), windows: windowsForSession() }],
+      [], new Map(), hosts.slice(0, 1),
+    )
+    renderSidebar({ workspace: ws })
+
+    expect(screen.queryByRole('button', { name: 'Create new window in work' })).not.toBeInTheDocument()
+  })
+
 })

@@ -49,7 +49,16 @@ func EnsureDir(socketPath string) error {
 		return err
 	}
 	if info.Mode().Perm() != 0o700 {
-		return fmt.Errorf("socket directory %s has permissions %04o; want 0700", dir, info.Mode().Perm())
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("set socket directory permissions: %w", err)
+		}
+		info, err = os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("socket directory %s has permissions %04o; want 0700", dir, info.Mode().Perm())
+		}
 	}
 	return nil
 }

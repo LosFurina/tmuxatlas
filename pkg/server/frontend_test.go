@@ -37,6 +37,11 @@ func TestFrontendHandlerServesPWAResources(t *testing.T) {
 		body               string
 	}{
 		{
+			path:         "/",
+			cacheControl: "no-cache",
+			body:         "<title>TmuxAtlas test shell</title>",
+		},
+		{
 			path:         "/manifest.json",
 			contentType:  "application/manifest+json",
 			cacheControl: "no-cache",
@@ -74,8 +79,8 @@ func TestFrontendHandlerServesPWAResources(t *testing.T) {
 			if scope := response.Header().Get("Service-Worker-Allowed"); scope != test.serviceWorkerScope {
 				t.Fatalf("Service-Worker-Allowed = %q, want %q", scope, test.serviceWorkerScope)
 			}
-			if test.body != "" && response.Body.String() != test.body {
-				t.Fatalf("body = %q, want %q", response.Body.String(), test.body)
+			if test.body != "" && !strings.Contains(response.Body.String(), test.body) {
+				t.Fatalf("body = %q, want substring %q", response.Body.String(), test.body)
 			}
 		})
 	}

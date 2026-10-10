@@ -41,13 +41,20 @@ func TestListenCreatesPrivateSocket(t *testing.T) {
 	}
 }
 
-func TestEnsureDirRejectsBroadPermissions(t *testing.T) {
+func TestEnsureDirNormalizesBroadPermissions(t *testing.T) {
 	dir := filepath.Join(shortTempDir(t), "runtime")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureDir(filepath.Join(dir, "tmuxatlas.sock")); err == nil {
-		t.Fatal("EnsureDir accepted a 0755 directory")
+	if err := EnsureDir(filepath.Join(dir, "tmuxatlas.sock")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("directory permissions = %04o, want 0700", got)
 	}
 }
 

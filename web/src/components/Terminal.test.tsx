@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PendingTerminalPaste } from '../hooks/useTerminal'
 import { terminalTargetKey } from '../lib/terminalInput'
+import { postRuntimeMutation } from '../lib/runtimeApi'
 import { Terminal, type TerminalCommandActions } from './Terminal'
 
 const terminal = {
@@ -37,10 +38,16 @@ const terminal = {
   findNext: vi.fn<() => Promise<boolean>>(),
   findPrevious: vi.fn<() => Promise<boolean>>(),
   clearSearch: vi.fn(),
+  setForwardWheel: vi.fn(),
+  setMouseTracking: vi.fn(),
 }
 
 vi.mock('../hooks/useTerminal', () => ({
   useTerminal: () => terminal,
+}))
+
+vi.mock('../lib/runtimeApi', () => ({
+  postRuntimeMutation: vi.fn().mockResolvedValue({}),
 }))
 
 describe('Terminal workspace controls', () => {
@@ -62,6 +69,7 @@ describe('Terminal workspace controls', () => {
       return 1
     })
     vi.clearAllMocks()
+    vi.mocked(postRuntimeMutation).mockResolvedValue({})
     terminal.copySelection.mockResolvedValue(true)
     terminal.pasteClipboard.mockResolvedValue(null)
     terminal.ensureSearchAddon.mockResolvedValue(undefined)
@@ -216,4 +224,37 @@ describe('Terminal workspace controls', () => {
     fireEvent.keyDown(draft, { key: 'Enter', ctrlKey: true })
     expect(terminal.sendCommand).toHaveBeenCalledWith('中文')
   })
+
+
+describe('selection mode toggle', () => {
+  it('renders Sel button in Terminal cockpit', () => {
+    render(<Terminal sessionName="one" hostId="host-a" />)
+    const sel = screen.getByRole('button', { name: /Selection mode/ })
+    expect(sel).toBeVisible()
+    expect(sel).toHaveTextContent('Sel')
+    expect(sel.dataset.active).toBeUndefined()
+  })
+
+  it('highlights Sel button when Shift is held', () => {
+    render(<Terminal sessionName="one" hostId="host-a" />)
+    const sel = screen.getByRole('button', { name: /Selection mode/ })
+
+    fireEvent.keyDown(document, { key: 'Shift', shiftKey: true })
+    expect(sel.dataset.active).toBe('true')
+
+    fireEvent.keyUp(document, { key: 'Shift', shiftKey: false })
+    expect(sel.dataset.active).toBeUndefined()
+  })
+
+  it('resets selection mode when session changes', () => {
+    const view = render(<Terminal sessionName="one" hostId="host-a" />)
+    const sel = screen.getByRole('button', { name: /Selection mode/ })
+    fireEvent.click(sel)
+    expect(sel.dataset.active).toBe('true')
+
+    view.rerender(<Terminal sessionName="two" hostId="host-b" />)
+    expect(screen.getByRole('button', { name: /Selection mode/ }).dataset.active).toBeUndefined()
+  })
+})
+
 })

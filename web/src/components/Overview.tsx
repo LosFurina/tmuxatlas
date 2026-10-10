@@ -6,6 +6,7 @@ import { ActivitySnapshot } from '../hooks/useActivity'
 import { usePreferences } from '../hooks/usePreferences'
 import { toolColors, statusConfig } from '../theme'
 import { FleetHealth } from './FleetHealth'
+import { formatLoadValue, formatMemoryMb } from './overviewFormat'
 
 interface OverviewProps {
   sessions: Session[]
@@ -177,9 +178,9 @@ function SystemStatsCard({ system }: { system: SystemStats }) {
           <div>
             <div className="text-[10px] text-muted-foreground/60 mb-0.5">Load Average</div>
             <div className="text-[13px] text-foreground font-mono">
-              {system.load['1m'].toFixed(2)}{' '}
-              <span className="text-muted-foreground">{system.load['5m'].toFixed(2)}</span>{' '}
-              <span className="text-muted-foreground/60">{system.load['15m'].toFixed(2)}</span>
+              {formatLoadValue(system.load['1m'])}{' '}
+              <span className="text-muted-foreground">{formatLoadValue(system.load['5m'])}</span>{' '}
+              <span className="text-muted-foreground/60">{formatLoadValue(system.load['15m'])}</span>
             </div>
           </div>
         )}
@@ -209,7 +210,7 @@ function SystemStatsCard({ system }: { system: SystemStats }) {
         <div>
           <div className="text-[10px] text-muted-foreground/60 mb-0.5">TmuxAtlas Memory</div>
           <div className="text-[13px] text-foreground">
-            {system.tmuxatlas_mem_mb.toFixed(1)} MB
+            {formatMemoryMb(system.tmuxatlas_mem_mb)} MB
           </div>
         </div>
         <div>

@@ -52,6 +52,25 @@ func handleSessionRename(w http.ResponseWriter, r *http.Request, router runtimeA
 	writeActionResponse(w, result)
 }
 
+func handleSessionNewWindow(w http.ResponseWriter, r *http.Request, router runtimeActionExecutor, opts *Options) {
+	var request struct {
+		HostID  string `json:"host_id"`
+		Session string `json:"session"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || router == nil {
+		writeRuntimeError(w, peer.RuntimeError{Code: peer.ErrorInvalidTarget})
+		return
+	}
+	result, err := router.Execute(r.Context(), "new-window",
+		peer.SessionTarget{HostID: request.HostID, Session: request.Session}, json.RawMessage(`{}`))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	refreshLocalSessionState(opts, request.HostID)
+	writeActionResponse(w, result)
+}
+
 func handleSessionSelectWindow(w http.ResponseWriter, r *http.Request, router runtimeActionExecutor) {
 	var request struct {
 		HostID  string `json:"host_id"`
@@ -105,4 +124,25 @@ func refreshLocalSessionState(opts *Options, hostID string) {
 func writeActionResponse(w http.ResponseWriter, result peer.ActionResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+func handleSessionMouse(w http.ResponseWriter, r *http.Request, router runtimeActionExecutor) {
+	var request struct {
+		HostID  string `json:"host_id"`
+		Session string `json:"session"`
+		Mouse   string `json:"mouse"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || router == nil ||
+		(request.Mouse != "on" && request.Mouse != "off") {
+		writeRuntimeError(w, peer.RuntimeError{Code: peer.ErrorInvalidTarget})
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"value": request.Mouse})
+	result, err := router.Execute(r.Context(), "mouse",
+		peer.SessionTarget{HostID: request.HostID, Session: request.Session}, payload)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeActionResponse(w, result)
 }

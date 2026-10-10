@@ -63,6 +63,29 @@ func (executor tmuxRuntimeExecutor) Execute(_ context.Context, operation string,
 			return nil, err
 		}
 		return json.RawMessage(`{"ok":true}`), nil
+	case "new-window":
+		index, err := executor.client.NewWindow(target.Session)
+		if err != nil {
+			return nil, err
+		}
+		result, _ := json.Marshal(map[string]any{
+			"target": target,
+			"window": index,
+		})
+		return result, nil
+	case "mouse":
+		var params struct {
+			Value string `json:"value"`
+		}
+		if json.Unmarshal(payload, &params) != nil ||
+			(params.Value != "on" && params.Value != "off") {
+			return nil, fmt.Errorf("value must be 'on' or 'off'")
+		}
+		if err := executor.client.SetMouse(target.Session, params.Value == "on"); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported operation")
 	}

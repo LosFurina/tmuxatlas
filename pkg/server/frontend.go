@@ -31,6 +31,11 @@ func serveFrontendPath(fileServer http.Handler, target string, w http.ResponseWr
 	fileServer.ServeHTTP(w, request)
 }
 
+func serveFrontendDocument(fileServer http.Handler, target string, w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache")
+	serveFrontendPath(fileServer, target, w, r)
+}
+
 func frontendHandler(frontend fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(frontend))
 
@@ -50,6 +55,8 @@ func frontendHandler(frontend fs.FS) http.Handler {
 					w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 					w.Header().Set("Cache-Control", "no-cache")
 					w.Header().Set("Service-Worker-Allowed", "/")
+				case "index.html":
+					w.Header().Set("Cache-Control", "no-cache")
 				}
 				serveFrontendPath(fileServer, requestPath, w, r)
 				return
@@ -64,6 +71,6 @@ func frontendHandler(frontend fs.FS) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		serveFrontendPath(fileServer, "/", w, r)
+		serveFrontendDocument(fileServer, "/", w, r)
 	})
 }

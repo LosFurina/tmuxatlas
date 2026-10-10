@@ -56,10 +56,10 @@ COPY --from=build /out/tmuxatlas /usr/local/bin/tmuxatlas
 ENV HOME=/var/lib/tmuxatlas/home \
     XDG_CONFIG_HOME=/var/lib/tmuxatlas/config \
     XDG_DATA_HOME=/var/lib/tmuxatlas/data \
-    XDG_RUNTIME_DIR=/run/tmuxatlas \
+    XDG_RUNTIME_DIR=/var/lib/tmuxatlas/run \
     TMUXATLAS_DEPLOYMENT=docker \
     TMUXATLAS_LISTEN=0.0.0.0:7654 \
-    TMUXATLAS_SOCKET=/run/tmuxatlas/tmuxatlas.sock
+    TMUXATLAS_SOCKET=/var/lib/tmuxatlas/run/tmuxatlas.sock
 
 USER 65532:65532
 VOLUME ["/var/lib/tmuxatlas"]

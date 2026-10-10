@@ -1,8 +1,10 @@
 package peer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 
@@ -132,6 +134,7 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 				if duplicate {
 					continue
 				}
+				logPTYInputDiagnostic(request.Target.Session, frame.Payload)
 				if _, err := ptySession.Write(frame.Payload); err != nil {
 					return
 				}
@@ -170,6 +173,19 @@ func (pm *PTYManager) Open(request PTYOpenPayload) {
 	}
 	pm.mu.Unlock()
 	log.Info("PTY relay stopped")
+}
+
+func logPTYInputDiagnostic(session string, payload []byte) {
+	if os.Getenv("TMUXATLAS_DEBUG_PTY_INPUT") != "1" {
+		return
+	}
+	if !bytes.Contains(payload, []byte("\x1b[<64;")) && !bytes.Contains(payload, []byte("\x1b[<65;")) {
+		return
+	}
+	logrus.WithFields(logrus.Fields{
+		"session": session,
+		"bytes":   len(payload),
+	}).Info("PTY input contains SGR mouse wheel sequence")
 }
 
 func (active *ActivePTY) Teardown(_ string) {

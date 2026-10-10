@@ -20,6 +20,8 @@ interface SidebarProps {
   canKillSession?: boolean
   onKillSession?: (target: string) => void | Promise<void>
   onSessionRenamed?: (oldKey: string, newKey: string) => void
+  onWindowSelect?: (sessionKey: string, windowIndex: number) => void | Promise<void>
+  onNewWindow?: (sessionKey: string) => Promise<void>
   onRuntimeError?: (message: string) => void
   mobileOpen?: boolean
   onMobileClose?: () => void
@@ -57,6 +59,8 @@ export function Sidebar({
   canKillSession = false,
   onKillSession,
   onSessionRenamed,
+  onWindowSelect,
+  onNewWindow,
   onRuntimeError,
   mobileOpen = false,
   onMobileClose,
@@ -66,6 +70,7 @@ export function Sidebar({
   const [expandedHosts, setExpandedHosts] = useState<Set<string>>(
     () => new Set(workspace.hosts.map(host => host.id)),
   )
+  const [expandedWindows, setExpandedWindows] = useState<Set<string>>(new Set())
   const knownHostsRef = useRef(new Set(workspace.hosts.map(host => host.id)))
   const [renaming, setRenaming] = useState<WorkspaceSession | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -325,7 +330,59 @@ export function Sidebar({
               <span aria-hidden="true">{pinnedSet.has(session.key) ? '★' : '☆'}</span>
             </button>
           )}
+          {!collapsed && onNewWindow && (
+            <button
+              type="button"
+              aria-label={`Create new window in ${session.name}`}
+              onClick={event => {
+                event.stopPropagation()
+                void onNewWindow(session.key)
+              }}
+              title="New window"
+              className="mr-0.5 grid h-9 w-8 shrink-0 place-items-center self-center rounded text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+          )}
+          {!collapsed && session.source.windows.length > 0 && (
+            <button
+              type="button"
+              aria-label={expandedWindows.has(session.key) ? `Hide windows for ${session.name}` : `Show windows for ${session.name}`}
+              aria-expanded={expandedWindows.has(session.key)}
+              onClick={event => {
+                event.stopPropagation()
+                setExpandedWindows(previous => {
+                  const next = new Set(previous)
+                  if (next.has(session.key)) next.delete(session.key)
+                  else next.add(session.key)
+                  return next
+                })
+              }}
+              className="mr-0.5 grid h-9 w-8 shrink-0 place-items-center self-center rounded text-muted-foreground opacity-70 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+            >
+              <span aria-hidden="true">{expandedWindows.has(session.key) ? '▾' : '▸'}</span>
+            </button>
+          )}
         </div>
+          {expandedWindows.has(session.key) && !collapsed && session.source.windows.length > 0 && (
+            <ul className="ml-3 border-l border-sidebar-border pl-1 space-y-0.5">
+              {session.source.windows.map(window => (
+                <li key={window.id}>
+                  <button
+                    type="button"
+                    aria-label={`Window ${window.index}: ${window.name}, ${window.active ? 'active' : 'inactive'}`}
+                    onClick={() => onWindowSelect?.(session.key, window.index)}
+                    className={cn(
+                      'block w-full rounded px-2 py-0.5 text-left text-[11px] leading-6 hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                      window.active ? 'text-primary font-medium' : 'text-muted-foreground',
+                    )}
+                  >
+                    {window.index}{'·'} {window.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
       </li>
     )
   }
@@ -449,6 +506,14 @@ export function Sidebar({
             style={{ left: Math.min(contextMenu.x, window.innerWidth - 240), top: Math.min(contextMenu.y, window.innerHeight - 280) }}
           >
             <button role="menuitem" type="button" onClick={() => startRename(contextMenu.session)} className="flex h-10 w-full items-center rounded px-3 text-left hover:bg-accent focus:bg-accent focus:outline-none">Rename</button>
+            {onNewWindow && (
+              <button role="menuitem" type="button" onClick={() => {
+                void onNewWindow(contextMenu.session.key)
+                setContextMenu(null)
+              }} className="flex h-10 w-full items-center rounded px-3 text-left hover:bg-accent focus:bg-accent focus:outline-none">
+                New Window
+              </button>
+            )}
             <button role="menuitem" type="button" onClick={() => { onTogglePin(contextMenu.session.key); setContextMenu(null) }} className="flex h-10 w-full items-center rounded px-3 text-left hover:bg-accent focus:bg-accent focus:outline-none">{pinnedSet.has(contextMenu.session.key) ? 'Unpin' : 'Pin'}</button>
             <div role="separator" className="my-1 h-px bg-border" />
             <button role="menuitem" type="button" onClick={() => runDetach(contextMenu.session.key)} className="flex h-10 w-full items-center rounded px-3 text-left hover:bg-accent focus:bg-accent focus:outline-none">Detach browser client (tmux keeps running)</button>
