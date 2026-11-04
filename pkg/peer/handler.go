@@ -18,8 +18,9 @@ import (
 )
 
 var wsUpgrader = websocket.Upgrader{
+	// Peers are Go clients and never send Origin; a browser always does.
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		return r.Header.Get("Origin") == ""
 	},
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024 * 16,
