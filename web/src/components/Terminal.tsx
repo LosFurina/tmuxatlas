@@ -19,6 +19,7 @@ import {
   deriveTerminalWorkspaceConnection,
   type TerminalWorkspaceConnectionState,
 } from '../state/terminalConnection'
+import { useMicStream } from '../hooks/useMicStream'
 import { TerminalCockpit } from './TerminalCockpit'
 import { TerminalContextMenu, type TerminalMenuPosition } from './TerminalContextMenu'
 import { TerminalPasteConfirmation } from './TerminalPasteConfirmation'
@@ -47,6 +48,8 @@ export interface TerminalProps {
   connectionState?: TerminalWorkspaceConnectionState
   fullscreen?: boolean
   zenMode?: boolean
+  /** The session runs on the machine serving this page, where the virtual microphone lives. */
+  hostLocal?: boolean
   onToggleFullscreen?: () => void
   onToggleZen?: () => void
   onRetry?: () => void
@@ -79,6 +82,7 @@ export function Terminal({
   connectionState,
   fullscreen,
   zenMode,
+  hostLocal,
   onToggleFullscreen,
   onToggleZen,
   onRetry,
@@ -126,6 +130,12 @@ export function Terminal({
     findPrevious,
     clearSearch,
   } = useTerminal(sessionName, hostId, input)
+  const mic = useMicStream(Boolean(hostLocal))
+  const toggleMic = useCallback(() => {
+    mic.toggle()
+    // Hold-to-talk keys must reach the Terminal, not press this button again.
+    focus()
+  }, [focus, mic])
 
   const workspaceConnection = connectionState ?? deriveTerminalWorkspaceConnection({
     hub: hubConnection ?? 'ready',
@@ -430,6 +440,7 @@ export function Terminal({
           showScrollToBottom={!isAtBottom || hasNewOutput}
           fullscreen={fullscreen}
           zenMode={zenMode}
+          mic={mic.available ? { state: mic.state, error: mic.error, onToggle: toggleMic } : undefined}
           onSearch={openSearch}
           onCopy={() => void copy().catch(() => {})}
           onPaste={() => void paste().catch(() => {})}
@@ -439,6 +450,16 @@ export function Terminal({
           onToggleZen={onToggleZen}
           onMore={showMenuAtButton}
         />
+      )}
+      {zenMode && mic.state !== 'off' && (
+        <button
+          type="button"
+          aria-label="Turn off microphone"
+          onClick={toggleMic}
+          className="absolute right-24 top-3 z-20 min-h-11 rounded border border-destructive bg-card/95 px-3 text-xs text-destructive"
+        >
+          ● Mic on
+        </button>
       )}
       {zenMode && onToggleZen && (
         <button

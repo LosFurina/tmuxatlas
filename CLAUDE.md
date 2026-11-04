@@ -46,6 +46,7 @@ pkg/
   preferences/           # User preferences
   stats/                 # System statistics
   webpush/               # Browser push notifications
+  voice/                 # Browser microphone to PulseAudio virtual mic (`/ws/mic`, enable with TMUXATLAS_VOICE=on)
 web/
   src/
     App.tsx              # Main app component

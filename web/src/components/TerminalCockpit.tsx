@@ -1,5 +1,12 @@
 import type { MouseEventHandler, ReactNode } from 'react'
+import type { MicState } from '../hooks/useMicStream'
 import type { TerminalWorkspaceConnectionState } from '../state/terminalConnection'
+
+export interface TerminalCockpitMic {
+  state: MicState
+  error: string
+  onToggle: () => void
+}
 
 interface TerminalCockpitProps {
   hostLabel: string
@@ -13,6 +20,7 @@ interface TerminalCockpitProps {
   showScrollToBottom: boolean
   fullscreen?: boolean
   zenMode?: boolean
+  mic?: TerminalCockpitMic
   onSearch: () => void
   onCopy: () => void
   onPaste: () => void
@@ -47,6 +55,7 @@ export function TerminalCockpit({
   showScrollToBottom,
   fullscreen,
   zenMode,
+  mic,
   onSearch,
   onCopy,
   onPaste,
@@ -75,6 +84,9 @@ export function TerminalCockpit({
           {paneLabel && <><span className="hidden lg:inline">/</span><span className="hidden lg:inline">{paneLabel}</span></>}
         </div>
         {toolStatus && <span className="hidden shrink-0 rounded border border-border px-1.5 py-0.5 text-muted-foreground lg:inline-flex">{toolStatus}</span>}
+        {mic?.error && (
+          <span role="alert" title={mic.error} className="min-w-0 truncate text-destructive">{mic.error}</span>
+        )}
         <span role="status" className={`ml-auto shrink-0 ${connectionClass}`}>
           {connectionLabels[connectionState]}
         </span>
@@ -88,6 +100,21 @@ export function TerminalCockpit({
           <CockpitButton label="Scroll to latest Terminal output" onClick={onScrollToBottom}>
             New output ↓
           </CockpitButton>
+        )}
+        {mic && (
+          <button
+            type="button"
+            aria-label={mic.state === 'off' ? 'Turn on microphone for voice input' : 'Turn off microphone'}
+            aria-pressed={mic.state !== 'off'}
+            onClick={mic.onToggle}
+            className={`min-h-11 shrink-0 rounded border px-2 md:min-h-8 ${mic.state === 'on'
+              ? 'border-destructive text-destructive'
+              : mic.state === 'starting'
+                ? 'border-warning text-warning'
+                : 'border-border text-muted-foreground hover:text-foreground'}`}
+          >
+            {mic.state === 'on' ? '● Mic on' : mic.state === 'starting' ? 'Mic…' : 'Mic'}
+          </button>
         )}
         <CockpitButton label="Search Terminal" onClick={onSearch}>Find</CockpitButton>
         <CockpitButton label="Copy Terminal selection" disabled={!canCopy} onClick={onCopy}>Copy</CockpitButton>
