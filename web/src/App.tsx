@@ -595,6 +595,7 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
                   sessionAvailable={Boolean(activeSession)}
                   fullscreen={terminalFullscreen}
                   zenMode={zenMode}
+                  hostLocal={activeHost?.local === true}
                   onToggleFullscreen={toggleFullscreen}
                   onToggleZen={toggleZen}
                   onRetry={retryTerminal}

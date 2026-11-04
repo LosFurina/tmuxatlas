@@ -39,6 +39,18 @@ const terminal = {
   clearSearch: vi.fn(),
 }
 
+const mic = {
+  available: false,
+  state: 'off' as 'off' | 'starting' | 'on',
+  error: '',
+  toggle: vi.fn(),
+}
+const useMicStream = vi.fn((_allowed: boolean) => mic)
+
+vi.mock('../hooks/useMicStream', () => ({
+  useMicStream: (allowed: boolean) => useMicStream(allowed),
+}))
+
 vi.mock('../hooks/useTerminal', () => ({
   useTerminal: () => terminal,
 }))
@@ -215,5 +227,54 @@ describe('Terminal workspace controls', () => {
     fireEvent.compositionEnd(draft)
     fireEvent.keyDown(draft, { key: 'Enter', ctrlKey: true })
     expect(terminal.sendCommand).toHaveBeenCalledWith('中文')
+  })
+})
+
+describe('Terminal microphone', () => {
+  beforeEach(() => {
+    mic.available = false
+    mic.state = 'off'
+    mic.error = ''
+    mic.toggle.mockClear()
+    terminal.focus.mockClear()
+    useMicStream.mockClear()
+  })
+
+  afterEach(cleanup)
+
+  it('hides the button when voice is unavailable', () => {
+    render(<Terminal sessionName="s" hostId="h" />)
+    expect(useMicStream).toHaveBeenCalledWith(false)
+    expect(screen.queryByRole('button', { name: /microphone/i })).toBeNull()
+  })
+
+  it('only allows the microphone for sessions on the local host', () => {
+    render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    expect(useMicStream).toHaveBeenCalledWith(true)
+  })
+
+  it('returns focus to the Terminal after toggling so hold-to-talk keys reach it', () => {
+    mic.available = true
+    render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    terminal.focus.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on microphone for voice input' }))
+    expect(mic.toggle).toHaveBeenCalledTimes(1)
+    expect(terminal.focus).toHaveBeenCalled()
+  })
+
+  it('shows that the microphone is live, including in Zen Mode', () => {
+    mic.available = true
+    mic.state = 'on'
+    const { rerender } = render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    expect(screen.getByRole('button', { name: 'Turn off microphone' }).getAttribute('aria-pressed')).toBe('true')
+    rerender(<Terminal sessionName="s" hostId="h" hostLocal zenMode onToggleZen={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Turn off microphone' }).textContent).toContain('Mic on')
+  })
+
+  it('shows microphone errors', () => {
+    mic.available = true
+    mic.error = 'Microphone access was denied in this browser.'
+    render(<Terminal sessionName="s" hostId="h" hostLocal />)
+    expect(screen.getByRole('alert').textContent).toContain('denied')
   })
 })
