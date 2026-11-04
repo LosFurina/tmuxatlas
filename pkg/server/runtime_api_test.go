@@ -54,6 +54,29 @@ func TestRuntimeAPIRequiresExplicitHostAndReturnsRemoteRenameTarget(t *testing.T
 	}
 }
 
+func TestRuntimeAPIKillRoutesSessionTarget(t *testing.T) {
+	missing := httptest.NewRecorder()
+	handleSessionKill(missing, httptest.NewRequest(http.MethodPost, "/",
+		bytes.NewBufferString(`{"host_id":"local"}`)), &fakeActionRouter{}, nil)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing session status=%d body=%s", missing.Code, missing.Body.String())
+	}
+
+	router := &fakeActionRouter{response: peer.ActionResponse{
+		RequestID: "request", Result: json.RawMessage(`{"ok":true}`),
+	}}
+	response := httptest.NewRecorder()
+	handleSessionKill(response, httptest.NewRequest(http.MethodPost, "/",
+		bytes.NewBufferString(`{"host_id":"local","session":"work"}`)), router, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if router.operation != "kill" ||
+		router.target != (peer.SessionTarget{HostID: "local", Session: "work"}) {
+		t.Fatalf("route operation=%q target=%#v", router.operation, router.target)
+	}
+}
+
 func TestRuntimeAPIMapsStructuredTerminalErrors(t *testing.T) {
 	for _, test := range []struct {
 		code   peer.ErrorCode

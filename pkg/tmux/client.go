@@ -244,6 +244,13 @@ func (c *Client) RenameSession(oldName, newName string) error {
 	return err
 }
 
+// KillSession terminates a tmux session. The "=" prefix makes tmux match the
+// session name exactly instead of the first session sharing that prefix.
+func (c *Client) KillSession(name string) error {
+	_, err := c.Exec("kill-session", "-t", "="+name)
+	return err
+}
+
 // CapturePaneContent returns the visible text content of a pane
 func (c *Client) CapturePaneContent(paneID string) (string, error) {
 	return c.Exec("capture-pane", "-t", paneID, "-p")
