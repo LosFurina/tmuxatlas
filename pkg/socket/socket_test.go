@@ -46,6 +46,10 @@ func TestEnsureDirRejectsBroadPermissions(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Mkdir is subject to the umask, so set the mode explicitly.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := EnsureDir(filepath.Join(dir, "tmuxatlas.sock")); err == nil {
 		t.Fatal("EnsureDir accepted a 0755 directory")
 	}

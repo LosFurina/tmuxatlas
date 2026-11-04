@@ -46,7 +46,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   server?.kill('SIGTERM')
-  await rm(testHome, { recursive: true, force: true })
+  await rm(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 test('keeps same-name sessions bound to explicit hosts and surfaces structured errors', async ({ page }) => {

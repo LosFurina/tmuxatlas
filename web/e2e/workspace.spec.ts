@@ -121,7 +121,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   server?.kill('SIGTERM')
-  await rm(testHome, { recursive: true, force: true })
+  await rm(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 test('Chromium Workspace covers navigation, Terminal tools, recovery, feedback, Zen isolation and accessibility', async ({ page }) => {
