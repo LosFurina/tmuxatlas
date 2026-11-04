@@ -103,7 +103,7 @@ test.afterAll(async () => {
   await context?.close()
   await browser?.close()
   server?.kill('SIGTERM')
-  await rm(testHome, { recursive: true, force: true })
+  await rm(testHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
 test('complete Passkey lifecycle and browser mutation protections', async ({ request }) => {
