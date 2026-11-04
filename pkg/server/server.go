@@ -392,6 +392,9 @@ func Run(ctx context.Context, opts *Options) error {
 				handleSessionRename(w, r, actionRouter, opts)
 			})
 
+			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/kill", func(w http.ResponseWriter, r *http.Request) {
+				handleSessionKill(w, r, actionRouter, opts)
+			})
 			mutations.With(httpguard.BodyReadDeadline(10*time.Second), httpguard.JSONBody(httpguard.SmallJSONLimit)).Post("/session/select-window", func(w http.ResponseWriter, r *http.Request) {
 				handleSessionSelectWindow(w, r, actionRouter)
 			})

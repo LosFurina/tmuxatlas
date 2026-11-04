@@ -35,6 +35,14 @@ func (executor tmuxRuntimeExecutor) Execute(_ context.Context, operation string,
 		return json.Marshal(map[string]any{
 			"target": SessionTarget{HostID: target.HostID, Session: params.NewName},
 		})
+	case "kill":
+		if target.Session == "" {
+			return nil, fmt.Errorf("session is required")
+		}
+		if err := executor.client.KillSession(target.Session); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(`{"ok":true}`), nil
 	case "select-window":
 		var params struct {
 			Window int    `json:"window"`

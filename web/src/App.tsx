@@ -437,6 +437,18 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
     setMobileSidebarOpen(false)
   }, [navigateTo, selectedSession])
 
+  const killSession = useCallback(async (target: string) => {
+    const { host, name } = parseSessionKey(target)
+    try {
+      await postRuntimeMutation('/api/session/kill', { host_id: host, session: name })
+      workspacePreferences.forgetTarget(target)
+      if (selectedSession === target) navigateTo(null)
+      await refresh()
+    } catch (err) {
+      setRuntimeError(err instanceof Error ? err.message : 'The session action failed.')
+    }
+  }, [navigateTo, refresh, selectedSession, workspacePreferences])
+
   // Dynamic document title
   useEffect(() => {
     if (currentView === 'session' && selectedSession) {
@@ -551,6 +563,8 @@ function AppInner({ onLogout, pwaInstall }: { onLogout?: () => void; pwaInstall:
             onTogglePin={workspacePreferences.togglePin}
             onSessionSelect={handleSessionSelect}
             onDetachSession={detachBrowserSession}
+            canKillSession
+            onKillSession={killSession}
             onSessionRenamed={(oldKey, newKey) => {
               workspacePreferences.replaceTarget(oldKey, newKey)
               if (selectedSession === oldKey) {
